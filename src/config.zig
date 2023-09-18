@@ -1,7 +1,7 @@
 // Heavily inspired by, but not quite compatible with, NestedText. Key differences:
 //
 // - Doesn't support multiline keys (this means map keys cannot start with
-//   ' ', \t, #, {, [, or >, and they cannot contain :)
+//   ' ', \t, #, {, [, |, or >, and they cannot contain :)
 // - Allows using tabs for indentation (but not mixed tabs/spaces)
 // - Indentation must be quantized consistently throughout the document. e.g.
 //   every nested layer being exactly 2 spaces past its parent. Tabs may
@@ -79,6 +79,7 @@ pub const LineTokenizer = struct {
         BadToken,
         MixedIndentation,
         UnquantizedIndentation,
+        TooMuchIndentation,
         MissingNewline,
         TrailingWhitespace,
         Impossible,
@@ -199,9 +200,11 @@ pub const LineTokenizer = struct {
             break :blk @divExact(indent, self.indentation.spaces);
         } else indent;
 
-        const relative: RelativeIndent = if (quantized > self.last_indent)
-            .indent
-        else if (quantized < self.last_indent)
+        const relative: RelativeIndent = if (quantized > self.last_indent) rel: {
+            if ((quantized - self.last_indent) > 1)
+                return error.TooMuchIndentation;
+            break :rel .indent;
+        } else if (quantized < self.last_indent)
             .{ .dedent = self.last_indent - quantized }
         else
             .none;
@@ -288,21 +291,21 @@ pub const LineTokenizer = struct {
             '|', '>' => |char| {
                 if (buf.len > 1 and buf[1] != ' ') return error.BadToken;
 
-                return if (buf.len == 1) .{
-                    .string = if (char == '|') buf[1..] else buf.ptr[1 .. buf.len + 1],
-                } else .{
-                    .string = if (char == '|') buf[2..] else buf.ptr[2 .. buf.len + 1],
+                return .{
+                    .string = buf.ptr[@min(2, buf.len) .. buf.len + @intFromBool(char == '|')],
                 };
             },
             '[' => {
                 if (buf.len < 2 or buf[buf.len - 1] != ']') return error.BadToken;
 
-                return .{ .flow_list = buf[1 .. buf.len - 1] };
+                // keep the closing ] for the flow parser
+                return .{ .flow_list = buf[1..] };
             },
             '{' => {
                 if (buf.len < 2 or buf[buf.len - 1] != '}') return error.BadToken;
 
-                return .{ .flow_map = buf[1 .. buf.len - 1] };
+                // keep the closing } fpr the flow parser
+                return .{ .flow_map = buf[1..] };
             },
             else => {
                 return .{ .scalar = buf };
@@ -341,7 +344,7 @@ pub const Parser = struct {
         DuplicateKey,
         BadMapEntry,
         Fail,
-    } || LineTokenizer.Error || std.mem.Allocator.Error;
+    } || LineTokenizer.Error || FlowParser.Error || std.mem.Allocator.Error;
 
     pub const DuplicateKeyBehavior = enum {
         use_first,
@@ -364,38 +367,59 @@ pub const Parser = struct {
         list: List(Value),
         map: Map(Value),
 
-        pub fn printDebug(self: Value) void {
-            return self.printRecursive(0);
+        pub inline fn fromString(alloc: std.mem.Allocator, input: []const u8) !Value {
+            var res: Value = .{ .string = try std.ArrayList(u8).initCapacity(alloc, input.len) };
+            res.string.appendSliceAssumeCapacity(input);
+            return res;
         }
+
+        pub inline fn newString(alloc: std.mem.Allocator) Value {
+            return .{ .string = std.ArrayList(u8).init(alloc) };
+        }
+
+        pub inline fn newList(alloc: std.mem.Allocator) Value {
+            return .{ .list = List(Value).init(alloc) };
+        }
+
+        pub inline fn newMap(alloc: std.mem.Allocator) Value {
+            return .{ .map = Map(Value).init(alloc) };
+        }
+
+        pub fn printDebug(self: Value) void {
+            self.printRecursive(0);
+            std.debug.print("\n", .{});
+        }
+
         fn printRecursive(self: Value, indent: usize) void {
             switch (self) {
                 .string => |str| {
-                    var lines = std.mem.splitScalar(u8, str.items, '\n');
-                    std.debug.print(
-                        "{[line]s}{[nl]s}",
-                        .{
-                            .line = lines.first(),
-                            .nl = if (lines.peek() == null) "" else "\n",
-                        },
-                    );
-                    while (lines.next()) |line| {
-                        std.debug.print(
-                            "{[empty]s: >[indent]}{[line]s}{[nl]s}",
-                            .{
-                                .empty = "",
-                                .indent = indent + 0,
-                                .line = line,
-                                .nl = if (lines.peek() == null) "" else "\n",
-                            },
-                        );
+                    if (std.mem.indexOfScalar(u8, str.items, '\n')) |_| {
+                        var lines = std.mem.splitScalar(u8, str.items, '\n');
+                        std.debug.print("\n", .{});
+                        while (lines.next()) |line| {
+                            std.debug.print(
+                                "{[empty]s: >[indent]}{[line]s}{[nl]s}",
+                                .{
+                                    .empty = "",
+                                    .indent = indent,
+                                    .line = line,
+                                    .nl = if (lines.peek() == null) "" else "\n",
+                                },
+                            );
+                        }
+                    } else {
+                        std.debug.print("{s}", .{str.items});
                     }
                 },
                 .list => |list| {
-                    std.debug.print(
-                        "{[empty]s: >[indent]}[\n",
-                        .{ .empty = "", .indent = indent },
-                    );
-                    for (list.items) |value| {
+                    if (list.items.len == 0) {
+                        std.debug.print("[]", .{});
+                        return;
+                    }
+
+                    std.debug.print("[\n", .{});
+                    for (list.items, 0..) |value, idx| {
+                        std.debug.print("{[empty]s: >[indent]}[{[idx]d}] = ", .{ .empty = "", .indent = indent, .idx = idx });
                         value.printRecursive(indent + 2);
                         std.debug.print(",\n", .{});
                     }
@@ -405,10 +429,12 @@ pub const Parser = struct {
                     );
                 },
                 .map => |map| {
-                    std.debug.print(
-                        "{[empty]s: >[indent]}{{\n",
-                        .{ .empty = "", .indent = indent },
-                    );
+                    if (map.count() == 0) {
+                        std.debug.print("{{}}", .{});
+                        return;
+                    }
+
+                    std.debug.print("{{\n", .{});
 
                     var iter = map.iterator();
 
@@ -458,7 +484,7 @@ pub const Parser = struct {
 
         var state: ParseState = .initial;
         var expect_shift: LineTokenizer.ShiftDirection = .none;
-        var empty_key: ?[]const u8 = null;
+        var dangling_key: ?[]const u8 = null;
         var stack = std.ArrayList(*Value).init(arena_alloc);
         defer stack.deinit();
 
@@ -492,11 +518,11 @@ pub const Parser = struct {
                                     state = .value;
                                 },
                                 .flow_list => |str| {
-                                    document.root = try parseFlowList(arena_alloc, str);
+                                    document.root = try parseFlowList(arena_alloc, str, self.dupe_behavior);
                                     state = .done;
                                 },
                                 .flow_map => |str| {
-                                    document.root = try self.parseFlowMap(arena_alloc, str);
+                                    document.root = try parseFlowMap(arena_alloc, str, self.dupe_behavior);
                                     state = .done;
                                 },
                             },
@@ -510,15 +536,15 @@ pub const Parser = struct {
                                         state = .value;
                                     },
                                     .string, .scalar => |str| {
-                                        try document.root.list.append(try valueFromString(arena_alloc, str));
+                                        try document.root.list.append(try valueFromString(arena_alloc, chopNewline(str)));
                                         state = .value;
                                     },
                                     .flow_list => |str| {
-                                        try document.root.list.append(try parseFlowList(arena_alloc, str));
+                                        try document.root.list.append(try parseFlowList(arena_alloc, str, self.dupe_behavior));
                                         state = .value;
                                     },
                                     .flow_map => |str| {
-                                        try document.root.list.append(try self.parseFlowMap(arena_alloc, str));
+                                        try document.root.list.append(try parseFlowMap(arena_alloc, str, self.dupe_behavior));
                                         state = .value;
                                     },
                                 }
@@ -536,21 +562,21 @@ pub const Parser = struct {
                                         // key somewhere until we can consume the
                                         // value. More parser state to lug along.
 
-                                        empty_key = pair.key;
+                                        dangling_key = pair.key;
                                         state = .value;
                                     },
                                     .string, .scalar => |str| {
                                         // we can do direct puts here because this is
                                         // the very first line of the document
-                                        try document.root.map.put(pair.key, try valueFromString(arena_alloc, str));
+                                        try document.root.map.put(pair.key, try valueFromString(arena_alloc, chopNewline(str)));
                                         state = .value;
                                     },
                                     .flow_list => |str| {
-                                        try document.root.map.put(pair.key, try parseFlowList(arena_alloc, str));
+                                        try document.root.map.put(pair.key, try parseFlowList(arena_alloc, str, self.dupe_behavior));
                                         state = .value;
                                     },
                                     .flow_map => |str| {
-                                        try document.root.map.put(pair.key, try self.parseFlowMap(arena_alloc, str));
+                                        try document.root.map.put(pair.key, try parseFlowMap(arena_alloc, str, self.dupe_behavior));
                                         state = .value;
                                     },
                                 }
@@ -561,7 +587,7 @@ pub const Parser = struct {
                         .string => |*string| {
                             if (line.indent == .indent) return error.UnexpectedIndent;
                             if (!flop and line.indent == .dedent) {
-                                // TODO: remove final newline or trailing space here
+                                _ = string.pop();
 
                                 var dedent_depth = line.indent.dedent;
                                 while (dedent_depth > 0) : (dedent_depth -= 1)
@@ -618,8 +644,8 @@ pub const Parser = struct {
                                     switch (in_line) {
                                         .empty => unreachable,
                                         .scalar => |str| try list.append(try valueFromString(arena_alloc, str)),
-                                        .flow_list => |str| try list.append(try parseFlowList(arena_alloc, str)),
-                                        .flow_map => |str| try list.append(try self.parseFlowMap(arena_alloc, str)),
+                                        .flow_list => |str| try list.append(try parseFlowList(arena_alloc, str, self.dupe_behavior)),
+                                        .flow_map => |str| try list.append(try parseFlowMap(arena_alloc, str, self.dupe_behavior)),
                                         .string => |str| {
                                             // string pushes the stack
                                             const new_string = try appendListGetValue(list, try valueFromString(arena_alloc, str));
@@ -639,9 +665,9 @@ pub const Parser = struct {
                                             expect_shift = .none;
                                             switch (value) {
                                                 .empty => expect_shift = .indent,
-                                                .scalar, .string => |str| try list.append(try valueFromString(arena_alloc, str)),
-                                                .flow_list => |str| try list.append(try parseFlowList(arena_alloc, str)),
-                                                .flow_map => |str| try list.append(try self.parseFlowMap(arena_alloc, str)),
+                                                .scalar, .string => |str| try list.append(try valueFromString(arena_alloc, chopNewline(str))),
+                                                .flow_list => |str| try list.append(try parseFlowList(arena_alloc, str, self.dupe_behavior)),
+                                                .flow_map => |str| try list.append(try parseFlowMap(arena_alloc, str, self.dupe_behavior)),
                                             }
                                         },
                                         // a new list is being created
@@ -655,9 +681,9 @@ pub const Parser = struct {
                                             expect_shift = .none;
                                             switch (value) {
                                                 .empty => expect_shift = .indent,
-                                                .scalar, .string => |str| try new_list.list.append(try valueFromString(arena_alloc, str)),
-                                                .flow_list => |str| try new_list.list.append(try parseFlowList(arena_alloc, str)),
-                                                .flow_map => |str| try new_list.list.append(try self.parseFlowMap(arena_alloc, str)),
+                                                .scalar, .string => |str| try new_list.list.append(try valueFromString(arena_alloc, chopNewline(str))),
+                                                .flow_list => |str| try new_list.list.append(try parseFlowList(arena_alloc, str, self.dupe_behavior)),
+                                                .flow_map => |str| try new_list.list.append(try parseFlowMap(arena_alloc, str, self.dupe_behavior)),
                                             }
                                         },
                                     }
@@ -681,24 +707,25 @@ pub const Parser = struct {
 
                                     switch (pair.val) {
                                         .empty => {
-                                            empty_key = pair.key;
+                                            dangling_key = pair.key;
                                             expect_shift = .indent;
                                         },
-                                        .scalar, .string => |str| try new_map.map.put(pair.key, try valueFromString(arena_alloc, str)),
-                                        .flow_list => |str| try new_map.map.put(pair.key, try parseFlowList(arena_alloc, str)),
-                                        .flow_map => |str| try new_map.map.put(pair.key, try self.parseFlowMap(arena_alloc, str)),
+                                        .scalar, .string => |str| try new_map.map.put(pair.key, try valueFromString(arena_alloc, chopNewline(str))),
+                                        .flow_list => |str| try new_map.map.put(pair.key, try parseFlowList(arena_alloc, str, self.dupe_behavior)),
+                                        .flow_map => |str| try new_map.map.put(pair.key, try parseFlowMap(arena_alloc, str, self.dupe_behavior)),
                                     }
                                 },
                             }
                         },
                         .map => |*map| {
                             if (expect_shift == .indent and line.indent != .indent) {
-                                try self.putMapKey(
+                                try putMap(
                                     map,
-                                    empty_key orelse return error.Fail,
+                                    dangling_key orelse return error.Fail,
                                     try valueFromString(arena_alloc, ""),
+                                    self.dupe_behavior,
                                 );
-                                empty_key = null;
+                                dangling_key = null;
                             }
 
                             if (!flop and line.indent == .dedent) {
@@ -715,28 +742,28 @@ pub const Parser = struct {
                                 .in_line => |in_line| {
                                     // assert that this line has been indented. this is required for an inline value when
                                     // the stack is in map mode.
-                                    if (expect_shift != .indent or line.indent != .indent or empty_key == null)
+                                    if (expect_shift != .indent or line.indent != .indent or dangling_key == null)
                                         return error.UnexpectedValue;
 
                                     expect_shift = .dedent;
 
                                     switch (in_line) {
                                         .empty => unreachable,
-                                        .scalar => |str| try self.putMapKey(map, empty_key.?, try valueFromString(arena_alloc, str)),
-                                        .flow_list => |str| try self.putMapKey(map, empty_key.?, try parseFlowList(arena_alloc, str)),
+                                        .scalar => |str| try putMap(map, dangling_key.?, try valueFromString(arena_alloc, str), self.dupe_behavior),
+                                        .flow_list => |str| try putMap(map, dangling_key.?, try parseFlowList(arena_alloc, str, self.dupe_behavior), self.dupe_behavior),
                                         .flow_map => |str| {
-                                            try self.putMapKey(map, empty_key.?, try self.parseFlowMap(arena_alloc, str));
+                                            try putMap(map, dangling_key.?, try parseFlowMap(arena_alloc, str, self.dupe_behavior), self.dupe_behavior);
                                         },
                                         .string => |str| {
                                             // string pushes the stack
-                                            const new_string = try self.putMapKeyGetValue(map, empty_key.?, try valueFromString(arena_alloc, str));
+                                            const new_string = try putMapGetValue(map, dangling_key.?, try valueFromString(arena_alloc, str), self.dupe_behavior);
                                             if (str[str.len - 1] != '\n') try new_string.string.append(' ');
                                             try stack.append(new_string);
                                             expect_shift = .none;
                                         },
                                     }
 
-                                    empty_key = null;
+                                    dangling_key = null;
                                 },
                                 .list_item => |value| {
                                     // this prong cannot be hit on dedent in a valid way.
@@ -747,19 +774,19 @@ pub const Parser = struct {
                                     //
                                     // dedenting back to the map stack level requires map_item
 
-                                    if (expect_shift != .indent or line.indent != .indent or empty_key == null)
+                                    if (expect_shift != .indent or line.indent != .indent or dangling_key == null)
                                         return error.UnexpectedValue;
 
-                                    const new_list = try self.putMapKeyGetValue(map, empty_key.?, .{ .list = List(Value).init(arena_alloc) });
+                                    const new_list = try putMapGetValue(map, dangling_key.?, .{ .list = List(Value).init(arena_alloc) }, self.dupe_behavior);
                                     try stack.append(new_list);
-                                    empty_key = null;
+                                    dangling_key = null;
 
                                     expect_shift = .none;
                                     switch (value) {
                                         .empty => expect_shift = .indent,
-                                        .scalar, .string => |str| try new_list.list.append(try valueFromString(arena_alloc, str)),
-                                        .flow_list => |str| try new_list.list.append(try parseFlowList(arena_alloc, str)),
-                                        .flow_map => |str| try new_list.list.append(try self.parseFlowMap(arena_alloc, str)),
+                                        .scalar, .string => |str| try new_list.list.append(try valueFromString(arena_alloc, chopNewline(str))),
+                                        .flow_list => |str| try new_list.list.append(try parseFlowList(arena_alloc, str, self.dupe_behavior)),
+                                        .flow_map => |str| try new_list.list.append(try parseFlowMap(arena_alloc, str, self.dupe_behavior)),
                                     }
                                 },
                                 .map_item => |pair| {
@@ -769,28 +796,28 @@ pub const Parser = struct {
                                         .none, .dedent => switch (pair.val) {
                                             .empty => {
                                                 expect_shift = .indent;
-                                                empty_key = pair.key;
+                                                dangling_key = pair.key;
                                             },
-                                            .scalar, .string => |str| try self.putMapKey(map, pair.key, try valueFromString(arena_alloc, str)),
-                                            .flow_list => |str| try self.putMapKey(map, pair.key, try parseFlowList(arena_alloc, str)),
-                                            .flow_map => |str| try self.putMapKey(map, pair.key, try self.parseFlowMap(arena_alloc, str)),
+                                            .scalar, .string => |str| try putMap(map, pair.key, try valueFromString(arena_alloc, chopNewline(str)), self.dupe_behavior),
+                                            .flow_list => |str| try putMap(map, pair.key, try parseFlowList(arena_alloc, str, self.dupe_behavior), self.dupe_behavior),
+                                            .flow_map => |str| try putMap(map, pair.key, try parseFlowMap(arena_alloc, str, self.dupe_behavior), self.dupe_behavior),
                                         },
                                         // a new map is being created
                                         .indent => {
-                                            if (expect_shift != .indent or empty_key == null) return error.UnexpectedValue;
+                                            if (expect_shift != .indent or dangling_key == null) return error.UnexpectedValue;
 
-                                            const new_map = try self.putMapKeyGetValue(map, empty_key.?, .{ .map = Map(Value).init(arena_alloc) });
+                                            const new_map = try putMapGetValue(map, dangling_key.?, .{ .map = Map(Value).init(arena_alloc) }, self.dupe_behavior);
                                             try stack.append(new_map);
-                                            empty_key = null;
+                                            dangling_key = null;
 
                                             switch (pair.val) {
                                                 .empty => {
                                                     expect_shift = .indent;
-                                                    empty_key = pair.key;
+                                                    dangling_key = pair.key;
                                                 },
-                                                .scalar, .string => |str| try new_map.map.put(pair.key, try valueFromString(arena_alloc, str)),
-                                                .flow_list => |str| try new_map.map.put(pair.key, try parseFlowList(arena_alloc, str)),
-                                                .flow_map => |str| try new_map.map.put(pair.key, try self.parseFlowMap(arena_alloc, str)),
+                                                .scalar, .string => |str| try new_map.map.put(pair.key, try valueFromString(arena_alloc, chopNewline(str))),
+                                                .flow_list => |str| try new_map.map.put(pair.key, try parseFlowList(arena_alloc, str, self.dupe_behavior)),
+                                                .flow_map => |str| try new_map.map.put(pair.key, try parseFlowMap(arena_alloc, str, self.dupe_behavior)),
                                             }
                                         },
                                     }
@@ -816,16 +843,20 @@ pub const Parser = struct {
             },
             .value => switch (stack.getLast().*) {
                 // remove the final trailing newline or space
-                .string => |*string| _ = string.pop(),
+                .string => |*string| _ = string.popOrNull(),
                 // if we have a dangling -, attach an empty string to it
                 .list => |*list| if (expect_shift == .indent) try list.append(try valueFromString(arena_alloc, "")),
-                // if we have a dangling key:, attach an empty string to it
-                .map => |*map| if (empty_key) |ek| try self.putMapKey(map, ek, try valueFromString(arena_alloc, "")),
+                // if we have a dangling "key:", attach an empty string to it
+                .map => |*map| if (dangling_key) |dk| try putMap(map, dk, try valueFromString(arena_alloc, ""), self.dupe_behavior),
             },
             .done => {},
         }
 
         return document;
+    }
+
+    inline fn chopNewline(buf: []const u8) []const u8 {
+        return if (buf.len > 0 and buf[buf.len - 1] == '\n') buf[0 .. buf.len - 1] else buf;
     }
 
     fn valueFromString(alloc: std.mem.Allocator, buffer: []const u8) Error!Value {
@@ -862,10 +893,11 @@ pub const Parser = struct {
             const colon = std.mem.indexOfScalar(u8, trimmed, ':') orelse
                 return error.BadMapEntry;
 
-            try self.putMapKey(
+            try putMap(
                 &result.map,
                 trimmed[0..colon],
                 try valueFromString(alloc, std.mem.trimLeft(u8, trimmed[colon + 1 .. trimmed.len], " ")),
+                self.dupe_behavior,
             );
         }
 
@@ -877,15 +909,15 @@ pub const Parser = struct {
         return &list.items[list.items.len - 1];
     }
 
-    inline fn putMapKey(self: *Parser, map: *Map(Value), key: []const u8, value: Value) Error!void {
-        _ = try self.putMapKeyGetValue(map, key, value);
+    inline fn putMap(map: *Map(Value), key: []const u8, value: Value, dupe_behavior: DuplicateKeyBehavior) Error!void {
+        _ = try putMapGetValue(map, key, value, dupe_behavior);
     }
 
-    inline fn putMapKeyGetValue(self: *Parser, map: *Map(Value), key: []const u8, value: Value) Error!*Value {
+    inline fn putMapGetValue(map: *Map(Value), key: []const u8, value: Value, dupe_behavior: DuplicateKeyBehavior) Error!*Value {
         const gop = try map.getOrPut(key);
 
         if (gop.found_existing)
-            switch (self.dupe_behavior) {
+            switch (dupe_behavior) {
                 .fail => return error.DuplicateKey,
                 .use_first => {},
                 .use_last => gop.value_ptr.* = value,
