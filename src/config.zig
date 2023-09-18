@@ -350,6 +350,103 @@ pub const LineTokenizer = struct {
     }
 };
 
+pub const Value = union(enum) {
+    pub const String = std.ArrayList(u8);
+    pub const Map = std.StringHashMap(Value);
+    pub const List = std.ArrayList(Value);
+
+    string: String,
+    list: List,
+    map: Map,
+
+    pub inline fn fromString(alloc: std.mem.Allocator, input: []const u8) !Value {
+        var res: Value = .{ .string = try String.initCapacity(alloc, input.len) };
+        res.string.appendSliceAssumeCapacity(input);
+        return res;
+    }
+
+    pub inline fn newString(alloc: std.mem.Allocator) Value {
+        return .{ .string = String.init(alloc) };
+    }
+
+    pub inline fn newList(alloc: std.mem.Allocator) Value {
+        return .{ .list = List.init(alloc) };
+    }
+
+    pub inline fn newMap(alloc: std.mem.Allocator) Value {
+        return .{ .map = Map.init(alloc) };
+    }
+
+    pub fn printDebug(self: Value) void {
+        self.printRecursive(0);
+        std.debug.print("\n", .{});
+    }
+
+    fn printRecursive(self: Value, indent: usize) void {
+        switch (self) {
+            .string => |str| {
+                if (std.mem.indexOfScalar(u8, str.items, '\n')) |_| {
+                    var lines = std.mem.splitScalar(u8, str.items, '\n');
+                    std.debug.print("\n", .{});
+                    while (lines.next()) |line| {
+                        std.debug.print(
+                            "{[empty]s: >[indent]}{[line]s}{[nl]s}",
+                            .{
+                                .empty = "",
+                                .indent = indent,
+                                .line = line,
+                                .nl = if (lines.peek() == null) "" else "\n",
+                            },
+                        );
+                    }
+                } else {
+                    std.debug.print("{s}", .{str.items});
+                }
+            },
+            .list => |list| {
+                if (list.items.len == 0) {
+                    std.debug.print("[]", .{});
+                    return;
+                }
+
+                std.debug.print("[\n", .{});
+                for (list.items, 0..) |value, idx| {
+                    std.debug.print("{[empty]s: >[indent]}[{[idx]d}] = ", .{ .empty = "", .indent = indent, .idx = idx });
+                    value.printRecursive(indent + 2);
+                    std.debug.print(",\n", .{});
+                }
+                std.debug.print(
+                    "{[empty]s: >[indent]}]",
+                    .{ .empty = "", .indent = indent },
+                );
+            },
+            .map => |map| {
+                if (map.count() == 0) {
+                    std.debug.print("{{}}", .{});
+                    return;
+                }
+
+                std.debug.print("{{\n", .{});
+
+                var iter = map.iterator();
+
+                while (iter.next()) |entry| {
+                    std.debug.print(
+                        "{[empty]s: >[indent]}{[key]s}: ",
+                        .{ .empty = "", .indent = indent + 2, .key = entry.key_ptr.* },
+                    );
+                    entry.value_ptr.printRecursive(indent + 4);
+                    std.debug.print(",\n", .{});
+                }
+                std.debug.print(
+                    "{[empty]s: >[indent]}}}",
+                    .{ .empty = "", .indent = indent },
+                );
+            },
+        }
+    }
+};
+
 pub const Parser = struct {
     allocator: std.mem.Allocator,
     dupe_behavior: DuplicateKeyBehavior = .fail,
@@ -383,102 +480,6 @@ pub const Parser = struct {
         fail,
     };
 
-    pub const Map = std.StringHashMap;
-    pub const List = std.ArrayList;
-
-    pub const Value = union(enum) {
-        string: std.ArrayList(u8),
-        list: List(Value),
-        map: Map(Value),
-
-        pub inline fn fromString(alloc: std.mem.Allocator, input: []const u8) !Value {
-            var res: Value = .{ .string = try std.ArrayList(u8).initCapacity(alloc, input.len) };
-            res.string.appendSliceAssumeCapacity(input);
-            return res;
-        }
-
-        pub inline fn newString(alloc: std.mem.Allocator) Value {
-            return .{ .string = std.ArrayList(u8).init(alloc) };
-        }
-
-        pub inline fn newList(alloc: std.mem.Allocator) Value {
-            return .{ .list = List(Value).init(alloc) };
-        }
-
-        pub inline fn newMap(alloc: std.mem.Allocator) Value {
-            return .{ .map = Map(Value).init(alloc) };
-        }
-
-        pub fn printDebug(self: Value) void {
-            self.printRecursive(0);
-            std.debug.print("\n", .{});
-        }
-
-        fn printRecursive(self: Value, indent: usize) void {
-            switch (self) {
-                .string => |str| {
-                    if (std.mem.indexOfScalar(u8, str.items, '\n')) |_| {
-                        var lines = std.mem.splitScalar(u8, str.items, '\n');
-                        std.debug.print("\n", .{});
-                        while (lines.next()) |line| {
-                            std.debug.print(
-                                "{[empty]s: >[indent]}{[line]s}{[nl]s}",
-                                .{
-                                    .empty = "",
-                                    .indent = indent,
-                                    .line = line,
-                                    .nl = if (lines.peek() == null) "" else "\n",
-                                },
-                            );
-                        }
-                    } else {
-                        std.debug.print("{s}", .{str.items});
-                    }
-                },
-                .list => |list| {
-                    if (list.items.len == 0) {
-                        std.debug.print("[]", .{});
-                        return;
-                    }
-
-                    std.debug.print("[\n", .{});
-                    for (list.items, 0..) |value, idx| {
-                        std.debug.print("{[empty]s: >[indent]}[{[idx]d}] = ", .{ .empty = "", .indent = indent, .idx = idx });
-                        value.printRecursive(indent + 2);
-                        std.debug.print(",\n", .{});
-                    }
-                    std.debug.print(
-                        "{[empty]s: >[indent]}]",
-                        .{ .empty = "", .indent = indent },
-                    );
-                },
-                .map => |map| {
-                    if (map.count() == 0) {
-                        std.debug.print("{{}}", .{});
-                        return;
-                    }
-
-                    std.debug.print("{{\n", .{});
-
-                    var iter = map.iterator();
-
-                    while (iter.next()) |entry| {
-                        std.debug.print(
-                            "{[empty]s: >[indent]}{[key]s}: ",
-                            .{ .empty = "", .indent = indent + 2, .key = entry.key_ptr.* },
-                        );
-                        entry.value_ptr.printRecursive(indent + 4);
-                        std.debug.print(",\n", .{});
-                    }
-                    std.debug.print(
-                        "{[empty]s: >[indent]}}}",
-                        .{ .empty = "", .indent = indent },
-                    );
-                },
-            }
-        }
-    };
-
     pub const ParseState = enum {
         initial,
         value,
@@ -488,6 +489,13 @@ pub const Parser = struct {
     pub const Document = struct {
         arena: std.heap.ArenaAllocator,
         root: Value,
+
+        pub fn init(alloc: std.mem.Allocator) Document {
+            return .{
+                .arena = std.heap.ArenaAllocator.init(alloc),
+                .root = undefined,
+            };
+        }
 
         pub fn printDebug(self: Document) void {
             return self.root.printDebug();
@@ -499,10 +507,7 @@ pub const Parser = struct {
     };
 
     pub fn parseBuffer(self: *Parser, buffer: []const u8) Error!Document {
-        var document: Document = .{
-            .arena = std.heap.ArenaAllocator.init(self.allocator),
-            .root = undefined,
-        };
+        var document = Document.init(self.allocator);
         errdefer document.deinit();
         const arena_alloc = document.arena.allocator();
 
@@ -556,7 +561,7 @@ pub const Parser = struct {
                                 },
                             },
                             .list_item => |value| {
-                                document.root = .{ .list = List(Value).init(arena_alloc) };
+                                document.root = .{ .list = Value.List.init(arena_alloc) };
                                 try stack.append(&document.root);
 
                                 switch (value) {
@@ -579,7 +584,7 @@ pub const Parser = struct {
                                 }
                             },
                             .map_item => |pair| {
-                                document.root = .{ .map = Map(Value).init(arena_alloc) };
+                                document.root = .{ .map = Value.Map.init(arena_alloc) };
                                 try stack.append(&document.root);
 
                                 switch (pair.val) {
@@ -713,7 +718,7 @@ pub const Parser = struct {
                                             if (expect_shift != .indent)
                                                 return error.UnexpectedIndent;
 
-                                            const new_list = try appendListGetValue(list, .{ .list = List(Value).init(arena_alloc) });
+                                            const new_list = try appendListGetValue(list, .{ .list = Value.List.init(arena_alloc) });
                                             try stack.append(new_list);
 
                                             expect_shift = .none;
@@ -739,7 +744,7 @@ pub const Parser = struct {
                                     if (line.indent != .indent)
                                         return error.UnexpectedValue;
 
-                                    const new_map = try appendListGetValue(list, .{ .map = Map(Value).init(arena_alloc) });
+                                    const new_map = try appendListGetValue(list, .{ .map = Value.Map.init(arena_alloc) });
                                     try stack.append(new_map);
                                     expect_shift = .none;
 
@@ -822,7 +827,7 @@ pub const Parser = struct {
                                     if (expect_shift != .indent or line.indent != .indent or dangling_key == null)
                                         return error.UnexpectedValue;
 
-                                    const new_list = try putMapGetValue(map, dangling_key.?, .{ .list = List(Value).init(arena_alloc) }, self.dupe_behavior);
+                                    const new_list = try putMapGetValue(map, dangling_key.?, .{ .list = Value.List.init(arena_alloc) }, self.dupe_behavior);
                                     try stack.append(new_list);
                                     dangling_key = null;
 
@@ -851,7 +856,7 @@ pub const Parser = struct {
                                         .indent => {
                                             if (expect_shift != .indent or dangling_key == null) return error.UnexpectedValue;
 
-                                            const new_map = try putMapGetValue(map, dangling_key.?, .{ .map = Map(Value).init(arena_alloc) }, self.dupe_behavior);
+                                            const new_map = try putMapGetValue(map, dangling_key.?, .{ .map = Value.Map.init(arena_alloc) }, self.dupe_behavior);
                                             try stack.append(new_map);
                                             dangling_key = null;
 
@@ -882,8 +887,8 @@ pub const Parser = struct {
         switch (state) {
             .initial => switch (self.default_object) {
                 .string => document.root = .{ .string = std.ArrayList(u8).init(arena_alloc) },
-                .list => document.root = .{ .list = List(Value).init(arena_alloc) },
-                .map => document.root = .{ .map = Map(Value).init(arena_alloc) },
+                .list => document.root = .{ .list = Value.List.init(arena_alloc) },
+                .map => document.root = .{ .map = Value.Map.init(arena_alloc) },
                 .fail => return error.EmptyDocument,
             },
             .value => switch (stack.getLast().*) {
@@ -920,16 +925,16 @@ pub const Parser = struct {
         return try parser.parse(dupe_behavior);
     }
 
-    inline fn appendListGetValue(list: *List(Value), value: Value) Error!*Value {
+    inline fn appendListGetValue(list: *Value.List, value: Value) Error!*Value {
         try list.append(value);
         return &list.items[list.items.len - 1];
     }
 
-    inline fn putMap(map: *Map(Value), key: []const u8, value: Value, dupe_behavior: DuplicateKeyBehavior) Error!void {
+    inline fn putMap(map: *Value.Map, key: []const u8, value: Value, dupe_behavior: DuplicateKeyBehavior) Error!void {
         _ = try putMapGetValue(map, key, value, dupe_behavior);
     }
 
-    inline fn putMapGetValue(map: *Map(Value), key: []const u8, value: Value, dupe_behavior: DuplicateKeyBehavior) Error!*Value {
+    inline fn putMapGetValue(map: *Value.Map, key: []const u8, value: Value, dupe_behavior: DuplicateKeyBehavior) Error!*Value {
         const gop = try map.getOrPut(key);
 
         if (gop.found_existing)
@@ -989,8 +994,6 @@ pub const Parser = struct {
 };
 
 pub const FlowParser = struct {
-    pub const Value = Parser.Value;
-
     const FlowStackItem = struct {
         value: *Value,
         // lists need this. maps do also for keys and values.
@@ -1057,35 +1060,17 @@ pub const FlowParser = struct {
         stack.items[stack.items.len - 1].item_start = start;
     }
 
-    inline fn popStack(self: *FlowParser, idx: usize) Parser.Error!void {
-        const finished = self.stack.popOrNull() orelse return error.BadState;
-        if (finished.value.* == .list) {
-            // this is not valid if we are in the want_list_separator state because
-            // there is no trailing comma in that state
+    inline fn popStack(self: *FlowParser) Parser.Error!ParseState {
+        if (self.stack.popOrNull() == null)
+            return error.BadState;
 
-            if (self.state == .want_list_item and (finished.value.list.items.len > 0 or idx > finished.item_start))
-                try finished.value.list.append(
-                    try Parser.valueFromString(self.alloc, ""),
-                )
-            else if (self.state == .consuming_list_item)
-                try finished.value.list.append(
-                    try Parser.valueFromString(
-                        self.alloc,
-                        self.buffer[finished.item_start..idx],
-                    ),
-                );
-        }
+        const parent = self.stack.getLastOrNull() orelse return .done;
 
-        const parent = self.stack.getLastOrNull() orelse {
-            self.state = .done;
-            return;
-        };
-
-        switch (parent.value.*) {
-            .list => self.state = .want_list_separator,
-            .map => self.state = .want_map_separator,
+        return switch (parent.value.*) {
+            .list => .want_list_separator,
+            .map => .want_map_separator,
             else => return error.BadState,
-        }
+        };
     }
 
     pub fn parse(self: *FlowParser, dupe_behavior: Parser.DuplicateKeyBehavior) Parser.Error!Value {
@@ -1143,7 +1128,14 @@ pub const FlowParser = struct {
                         try self.stack.append(.{ .value = new_list, .item_start = idx + 1 });
                         self.state = .want_list_item;
                     },
-                    ']' => try self.popStack(idx),
+                    ']' => {
+                        const finished = self.stack.getLastOrNull() orelse return error.BadState;
+                        if (finished.value.list.items.len > 0 or idx > finished.item_start)
+                            try finished.value.list.append(
+                                try Parser.valueFromString(self.alloc, ""),
+                            );
+                        self.state = try self.popStack();
+                    },
                     else => {
                         try setStackItemStart(self.stack, idx);
                         self.state = .consuming_list_item;
@@ -1160,7 +1152,16 @@ pub const FlowParser = struct {
 
                         self.state = .want_list_item;
                     },
-                    ']' => try self.popStack(idx),
+                    ']' => {
+                        const finished = self.stack.getLastOrNull() orelse return error.BadState;
+                        try finished.value.list.append(
+                            try Parser.valueFromString(
+                                self.alloc,
+                                self.buffer[finished.item_start..idx],
+                            ),
+                        );
+                        self.state = try self.popStack();
+                    },
                     else => continue :charloop,
                 },
                 .want_list_separator => switch (char) {
@@ -1169,7 +1170,7 @@ pub const FlowParser = struct {
                         try setStackItemStart(self.stack, idx);
                         self.state = .want_list_item;
                     },
-                    ']' => try self.popStack(idx),
+                    ']' => self.state = try self.popStack(),
                     else => return error.BadToken,
                 },
                 .want_map_key => switch (char) {
@@ -1183,7 +1184,7 @@ pub const FlowParser = struct {
                         dangling_key = "";
                         self.state = .want_map_value;
                     },
-                    '}' => try self.popStack(idx),
+                    '}' => self.state = try self.popStack(),
                     else => {
                         try setStackItemStart(self.stack, idx);
                         self.state = .consuming_map_key;
@@ -1251,7 +1252,7 @@ pub const FlowParser = struct {
                         );
 
                         dangling_key = null;
-                        try self.popStack(idx);
+                        self.state = try self.popStack();
                     },
                     else => {
                         try setStackItemStart(self.stack, idx);
@@ -1269,14 +1270,14 @@ pub const FlowParser = struct {
                         );
                         dangling_key = null;
                         self.state = .want_map_key;
-                        if (term == '}') try self.popStack(idx);
+                        if (term == '}') self.state = try self.popStack();
                     },
                     else => continue :charloop,
                 },
                 .want_map_separator => switch (char) {
                     ' ', '\t' => continue :charloop,
                     ',' => self.state = .want_map_key,
-                    '}' => try self.popStack(idx),
+                    '}' => self.state = try self.popStack(),
                     else => return error.BadToken,
                 },
                 // the root value was closed but there are characters remaining
