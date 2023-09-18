@@ -865,43 +865,18 @@ pub const Parser = struct {
         return result;
     }
 
-    fn parseFlowList(alloc: std.mem.Allocator, contents: []const u8) Error!Value {
-        // TODO: if we pass in the parse stack, is it straightforward to support nested
-        // lists/maps? Can seek the split iterator by manually setting index.
-        var result: Value = .{ .list = List(Value).init(alloc) };
+    fn parseFlowList(alloc: std.mem.Allocator, contents: []const u8, dupe_behavior: DuplicateKeyBehavior) Error!Value {
+        var parser = try FlowParser.initList(alloc, contents);
+        defer parser.deinit();
 
-        // TODO: consume exactly one space after the comma
-        var splitter = std.mem.splitScalar(u8, contents, ',');
-        while (splitter.next()) |entry| {
-            try result.list.append(
-                try valueFromString(alloc, std.mem.trim(u8, entry, " ")),
-            );
-        }
-
-        return result;
+        return try parser.parse(dupe_behavior);
     }
 
-    fn parseFlowMap(self: *Parser, alloc: std.mem.Allocator, contents: []const u8) Error!Value {
-        var result: Value = .{ .map = Map(Value).init(alloc) };
+    fn parseFlowMap(alloc: std.mem.Allocator, contents: []const u8, dupe_behavior: DuplicateKeyBehavior) Error!Value {
+        var parser = try FlowParser.initMap(alloc, contents);
+        defer parser.deinit();
 
-        var splitter = std.mem.splitScalar(u8, contents, ',');
-
-        while (splitter.next()) |entry| {
-            const trimmed = std.mem.trim(u8, entry, " ");
-
-            // TODO: consume exactly one space after the colon?
-            const colon = std.mem.indexOfScalar(u8, trimmed, ':') orelse
-                return error.BadMapEntry;
-
-            try putMap(
-                &result.map,
-                trimmed[0..colon],
-                try valueFromString(alloc, std.mem.trimLeft(u8, trimmed[colon + 1 .. trimmed.len], " ")),
-                self.dupe_behavior,
-            );
-        }
-
-        return result;
+        return try parser.parse(dupe_behavior);
     }
 
     inline fn appendListGetValue(list: *List(Value), value: Value) Error!*Value {
@@ -969,5 +944,308 @@ pub const Parser = struct {
                 }) catch unreachable,
             },
         });
+    }
+};
+
+pub const FlowParser = struct {
+    pub const Value = Parser.Value;
+
+    const FlowStackItem = struct {
+        value: *Value,
+        // lists need this. maps do also for keys and values.
+        item_start: usize = 0,
+        dangling_key: ?[]const u8 = null,
+    };
+
+    const FlowStack: type = std.ArrayList(FlowStackItem);
+
+    buffer: []const u8,
+    root: Value,
+    alloc: std.mem.Allocator,
+    stack: FlowStack,
+    state: ParseState,
+
+    // make this an ugly state machine parser
+    const ParseState = enum {
+        want_list_item,
+        consuming_list_item,
+        want_list_separator,
+        want_map_key,
+        consuming_map_key,
+        want_map_value,
+        consuming_map_value,
+        want_map_separator,
+        done,
+    };
+
+    const Error = error{
+        BadState,
+        BadToken,
+    } || std.mem.Allocator.Error;
+
+    pub fn initList(alloc: std.mem.Allocator, buffer: []const u8) Error!FlowParser {
+        return .{
+            .buffer = buffer,
+            .root = undefined,
+            .alloc = alloc,
+            .stack = undefined,
+            .state = .want_list_item,
+        };
+    }
+
+    pub fn initMap(alloc: std.mem.Allocator, buffer: []const u8) Error!FlowParser {
+        return .{
+            .buffer = buffer,
+            .root = undefined,
+            .alloc = alloc,
+            .stack = undefined,
+            .state = .want_map_key,
+        };
+    }
+
+    pub fn deinit(self: *FlowParser) void {
+        self.stack.deinit();
+    }
+
+    inline fn getStackTip(stack: FlowStack) Error!*FlowStackItem {
+        if (stack.items.len == 0) return error.BadState;
+        return &stack.items[stack.items.len - 1];
+    }
+
+    inline fn setStackItemStart(stack: FlowStack, start: usize) Error!void {
+        if (stack.items.len == 0) return error.BadState;
+        stack.items[stack.items.len - 1].item_start = start;
+    }
+
+    inline fn setStackDanglingKey(stack: FlowStack, key: []const u8) Error!void {
+        if (stack.items.len == 0) return error.BadState;
+        stack.items[stack.items.len - 1].dangling_key = key;
+    }
+
+    inline fn popStack(self: *FlowParser, idx: usize) Parser.Error!void {
+        const finished = self.stack.popOrNull() orelse return error.BadState;
+        if (finished.value.* == .list) {
+            // this is not valid if we are in the want_list_separator state because
+            // there is no trailing comma in that state
+
+            if (self.state == .want_list_item and (finished.value.list.items.len > 0 or idx > finished.item_start + 1))
+                try finished.value.list.append(
+                    try Parser.valueFromString(self.alloc, ""),
+                )
+            else if (self.state == .consuming_list_item)
+                try finished.value.list.append(
+                    try Parser.valueFromString(
+                        self.alloc,
+                        self.buffer[finished.item_start..idx],
+                    ),
+                );
+        }
+
+        const parent = self.stack.getLastOrNull() orelse {
+            self.state = .done;
+            return;
+        };
+
+        switch (parent.value.*) {
+            .list => self.state = .want_list_separator,
+            .map => self.state = .want_map_separator,
+            else => return error.BadState,
+        }
+    }
+
+    pub fn parse(self: *FlowParser, dupe_behavior: Parser.DuplicateKeyBehavior) Parser.Error!Value {
+        // prime the stack:
+        switch (self.state) {
+            .want_list_item => {
+                self.root = Value.newList(self.alloc);
+                self.stack = try FlowStack.initCapacity(self.alloc, 1);
+                self.stack.appendAssumeCapacity(.{ .value = &self.root });
+            },
+            .want_map_key => {
+                self.root = Value.newMap(self.alloc);
+                self.stack = try FlowStack.initCapacity(self.alloc, 1);
+                self.stack.appendAssumeCapacity(.{ .value = &self.root });
+            },
+            else => {
+                return error.BadState;
+            },
+        }
+
+        charloop: for (self.buffer, 0..) |char, idx| {
+            // std.debug.print("{s} => {c}\n", .{ @tagName(self.state), char });
+            switch (self.state) {
+                .want_list_item => switch (char) {
+                    ' ', '\t' => continue :charloop,
+                    ',' => {
+                        // empty value
+                        const tip = try getStackTip(self.stack);
+                        try tip.value.list.append(try Value.fromString(self.alloc, ""));
+                        tip.item_start = idx + 1;
+                    },
+                    '{' => {
+                        const tip = try getStackTip(self.stack);
+
+                        const new_map = try Parser.appendListGetValue(
+                            &tip.value.list,
+                            Value.newMap(self.alloc),
+                        );
+
+                        tip.item_start = idx;
+                        try self.stack.append(.{ .value = new_map });
+                        self.state = .want_map_key;
+                    },
+                    '[' => {
+                        const tip = try getStackTip(self.stack);
+
+                        const new_list = try Parser.appendListGetValue(
+                            &tip.value.list,
+                            Value.newList(self.alloc),
+                        );
+
+                        tip.item_start = idx;
+                        try self.stack.append(.{ .value = new_list, .item_start = idx + 1 });
+                        self.state = .want_list_item;
+                    },
+                    ']' => try self.popStack(idx),
+                    else => {
+                        try setStackItemStart(self.stack, idx);
+                        self.state = .consuming_list_item;
+                    },
+                },
+                .consuming_list_item => switch (char) {
+                    ',' => {
+                        const tip = try getStackTip(self.stack);
+
+                        try tip.value.list.append(
+                            try Value.fromString(self.alloc, self.buffer[tip.item_start..idx]),
+                        );
+                        tip.item_start = idx + 1;
+
+                        self.state = .want_list_item;
+                    },
+                    ']' => try self.popStack(idx),
+                    else => continue :charloop,
+                },
+                .want_list_separator => switch (char) {
+                    ' ', '\t' => continue :charloop,
+                    ',' => {
+                        try setStackItemStart(self.stack, idx);
+                        self.state = .want_list_item;
+                    },
+                    ']' => try self.popStack(idx),
+                    else => return error.BadToken,
+                },
+                .want_map_key => switch (char) {
+                    ' ', '\t' => continue :charloop,
+                    // forbid these characters so that flow dictionary keys cannot start
+                    // with characters that regular dictionary keys cannot start with
+                    // (even though they're unambiguous in this specific context).
+                    '{', '[', '#', '>', '|', ',' => return error.BadToken,
+                    ':' => {
+                        // we have an empty map key
+                        try setStackDanglingKey(self.stack, "");
+                        self.state = .want_map_value;
+                    },
+                    '}' => try self.popStack(idx),
+                    else => {
+                        try setStackItemStart(self.stack, idx);
+                        self.state = .consuming_map_key;
+                    },
+                },
+                .consuming_map_key => switch (char) {
+                    ':' => {
+                        const tip = try getStackTip(self.stack);
+                        tip.dangling_key = self.buffer[tip.item_start..idx];
+
+                        self.state = .want_map_value;
+                    },
+                    else => continue :charloop,
+                },
+                .want_map_value => switch (char) {
+                    ' ', '\t' => continue :charloop,
+                    ',' => {
+                        const tip = try getStackTip(self.stack);
+                        try Parser.putMap(
+                            &tip.value.map,
+                            tip.dangling_key.?,
+                            try Parser.valueFromString(self.alloc, ""),
+                            dupe_behavior,
+                        );
+
+                        self.state = .want_map_key;
+                    },
+                    '[' => {
+                        const tip = try getStackTip(self.stack);
+
+                        const new_list = try Parser.putMapGetValue(
+                            &tip.value.map,
+                            tip.dangling_key.?,
+                            Value.newList(self.alloc),
+                            dupe_behavior,
+                        );
+
+                        try self.stack.append(.{ .value = new_list, .item_start = idx + 1 });
+                        self.state = .want_list_item;
+                    },
+                    '{' => {
+                        const tip = try getStackTip(self.stack);
+
+                        const new_map = try Parser.putMapGetValue(
+                            &tip.value.map,
+                            tip.dangling_key.?,
+                            Value.newMap(self.alloc),
+                            dupe_behavior,
+                        );
+
+                        try self.stack.append(.{ .value = new_map });
+                        self.state = .want_map_key;
+                    },
+                    '}' => {
+                        // the value is an empty string and this map is closed
+                        const tip = try getStackTip(self.stack);
+                        try Parser.putMap(
+                            &tip.value.map,
+                            tip.dangling_key.?,
+                            try Parser.valueFromString(self.alloc, ""),
+                            dupe_behavior,
+                        );
+
+                        try self.popStack(idx);
+                    },
+                    else => {
+                        try setStackItemStart(self.stack, idx);
+                        self.state = .consuming_map_value;
+                    },
+                },
+                .consuming_map_value => switch (char) {
+                    ',', '}' => |term| {
+                        const tip = try getStackTip(self.stack);
+                        try Parser.putMap(
+                            &tip.value.map,
+                            tip.dangling_key.?,
+                            try Parser.valueFromString(self.alloc, self.buffer[tip.item_start..idx]),
+                            dupe_behavior,
+                        );
+
+                        self.state = .want_map_key;
+                        if (term == '}') try self.popStack(idx);
+                    },
+                    else => continue :charloop,
+                },
+                .want_map_separator => switch (char) {
+                    ' ', '\t' => continue :charloop,
+                    ',' => self.state = .want_map_key,
+                    '}' => try self.popStack(idx),
+                    else => return error.BadToken,
+                },
+                // the root value was closed but there are characters remaining
+                // in the buffer
+                .done => return error.BadState,
+            }
+        }
+        // we ran out of characters while still in the middle of an object
+        if (self.state != .done) return error.BadState;
+
+        return self.root;
     }
 };
