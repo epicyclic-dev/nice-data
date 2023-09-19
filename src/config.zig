@@ -354,15 +354,31 @@ pub const Value = union(enum) {
     pub const String = std.ArrayList(u8);
     pub const Map = std.StringHashMap(Value);
     pub const List = std.ArrayList(Value);
+    pub const TagType = @typeInfo(Value).Union.tag_type.?;
 
+    scalar: String,
     string: String,
     list: List,
+    flow_list: List,
     map: Map,
+    flow_map: Map,
+
+    pub inline fn fromScalar(alloc: std.mem.Allocator, input: []const u8) !Value {
+        return try _fromScalarOrString(alloc, .scalar, input);
+    }
 
     pub inline fn fromString(alloc: std.mem.Allocator, input: []const u8) !Value {
-        var res: Value = .{ .string = try String.initCapacity(alloc, input.len) };
-        res.string.appendSliceAssumeCapacity(input);
+        return try _fromScalarOrString(alloc, .string, input);
+    }
+
+    inline fn _fromScalarOrString(alloc: std.mem.Allocator, comptime classification: TagType, input: []const u8) !Value {
+        var res = @unionInit(Value, @tagName(classification), try String.initCapacity(alloc, input.len));
+        @field(res, @tagName(classification)).appendSliceAssumeCapacity(input);
         return res;
+    }
+
+    pub inline fn newScalar(alloc: std.mem.Allocator) Value {
+        return .{ .scalar = String.init(alloc) };
     }
 
     pub inline fn newString(alloc: std.mem.Allocator) Value {
@@ -373,8 +389,16 @@ pub const Value = union(enum) {
         return .{ .list = List.init(alloc) };
     }
 
+    pub inline fn newFlowList(alloc: std.mem.Allocator) Value {
+        return .{ .flow_list = List.init(alloc) };
+    }
+
     pub inline fn newMap(alloc: std.mem.Allocator) Value {
         return .{ .map = Map.init(alloc) };
+    }
+
+    pub inline fn newFlowMap(alloc: std.mem.Allocator) Value {
+        return .{ .flow_map = Map.init(alloc) };
     }
 
     pub fn printDebug(self: Value) void {
@@ -384,7 +408,7 @@ pub const Value = union(enum) {
 
     fn printRecursive(self: Value, indent: usize) void {
         switch (self) {
-            .string => |str| {
+            .scalar, .string => |str| {
                 if (std.mem.indexOfScalar(u8, str.items, '\n')) |_| {
                     var lines = std.mem.splitScalar(u8, str.items, '\n');
                     std.debug.print("\n", .{});
@@ -403,7 +427,7 @@ pub const Value = union(enum) {
                     std.debug.print("{s}", .{str.items});
                 }
             },
-            .list => |list| {
+            .list, .flow_list => |list| {
                 if (list.items.len == 0) {
                     std.debug.print("[]", .{});
                     return;
@@ -420,7 +444,7 @@ pub const Value = union(enum) {
                     .{ .empty = "", .indent = indent },
                 );
             },
-            .map => |map| {
+            .map, .flow_map => |map| {
                 if (map.count() == 0) {
                     std.debug.print("{{}}", .{});
                     return;
@@ -506,6 +530,27 @@ pub const Parser = struct {
         }
     };
 
+    pub const State = struct {
+        pub const Stack = std.ArrayList(*Value);
+
+        document: Document,
+        value_stack: Stack,
+        state: ParseState = .initial,
+        expect_shift: LineTokenizer.ShiftDirection = .none,
+        dangling_key: ?[]const u8 = null,
+
+        pub fn init(alloc: std.mem.Allocator) State {
+            return .{
+                .document = Document.init(alloc),
+                .value_stack = Stack.init(alloc),
+            };
+        }
+
+        pub fn deinit(self: State) void {
+            self.value_stack.deinit();
+        }
+    };
+
     pub fn parseBuffer(self: *Parser, buffer: []const u8) Error!Document {
         var document = Document.init(self.allocator);
         errdefer document.deinit();
@@ -536,7 +581,7 @@ pub const Parser = struct {
                                 // empty scalars are only emitted for a list_item or a map_item
                                 .empty => unreachable,
                                 .scalar => |str| {
-                                    document.root = try valueFromString(arena_alloc, str);
+                                    document.root = try Value.fromScalar(arena_alloc, str);
                                     // this is a cheesy hack. If the document consists
                                     // solely of a scalar, the finalizer will try to
                                     // chop a line ending off of it, so we need to add
@@ -546,7 +591,7 @@ pub const Parser = struct {
                                     state = .done;
                                 },
                                 .line_string, .space_string => |str| {
-                                    document.root = try valueFromString(arena_alloc, str);
+                                    document.root = try Value.fromString(arena_alloc, str);
                                     try document.root.string.append(in_line.lineEnding());
                                     try stack.append(&document.root);
                                     state = .value;
@@ -561,7 +606,7 @@ pub const Parser = struct {
                                 },
                             },
                             .list_item => |value| {
-                                document.root = .{ .list = Value.List.init(arena_alloc) };
+                                document.root = Value.newList(arena_alloc);
                                 try stack.append(&document.root);
 
                                 switch (value) {
@@ -569,8 +614,12 @@ pub const Parser = struct {
                                         expect_shift = .indent;
                                         state = .value;
                                     },
-                                    .line_string, .space_string, .scalar => |str| {
-                                        try document.root.list.append(try valueFromString(arena_alloc, str));
+                                    .scalar => |str| {
+                                        try document.root.list.append(try Value.fromScalar(arena_alloc, str));
+                                        state = .value;
+                                    },
+                                    .line_string, .space_string => |str| {
+                                        try document.root.list.append(try Value.fromString(arena_alloc, str));
                                         state = .value;
                                     },
                                     .flow_list => |str| {
@@ -584,7 +633,7 @@ pub const Parser = struct {
                                 }
                             },
                             .map_item => |pair| {
-                                document.root = .{ .map = Value.Map.init(arena_alloc) };
+                                document.root = Value.newMap(arena_alloc);
                                 try stack.append(&document.root);
 
                                 switch (pair.val) {
@@ -599,10 +648,16 @@ pub const Parser = struct {
                                         dangling_key = pair.key;
                                         state = .value;
                                     },
-                                    .line_string, .space_string, .scalar => |str| {
+                                    .scalar => |str| {
                                         // we can do direct puts here because this is
                                         // the very first line of the document
-                                        try document.root.map.put(pair.key, try valueFromString(arena_alloc, str));
+                                        try document.root.map.put(pair.key, try Value.fromScalar(arena_alloc, str));
+                                        state = .value;
+                                    },
+                                    .line_string, .space_string => |str| {
+                                        // we can do direct puts here because this is
+                                        // the very first line of the document
+                                        try document.root.map.put(pair.key, try Value.fromString(arena_alloc, str));
                                         state = .value;
                                     },
                                     .flow_list => |str| {
@@ -618,6 +673,14 @@ pub const Parser = struct {
                         }
                     },
                     .value => switch (stack.getLast().*) {
+                        // these three states are never reachable here. flow_list and
+                        // flow_map are parsed with a separate state machine. These
+                        // value tyeps can only be present by themselves as the first
+                        // line of the document, in which case the document consists
+                        // only of that single line: this parser jumps immediately into
+                        // the .done state, bypassing the .value state in which this
+                        // switch is embedded.
+                        .scalar, .flow_list, .flow_map => unreachable,
                         .string => |*string| {
                             if (line.indent == .indent)
                                 return error.UnexpectedIndent;
@@ -655,7 +718,7 @@ pub const Parser = struct {
                             // the first line here creates the expect_shift, but the second line
                             // is a valid continuation of the list despite not being indented
                             if (expect_shift == .indent and line.indent != .indent)
-                                try list.append(try valueFromString(arena_alloc, ""));
+                                try list.append(Value.newScalar(arena_alloc));
 
                             // Consider:
                             //
@@ -687,12 +750,12 @@ pub const Parser = struct {
                                     expect_shift = .dedent;
                                     switch (in_line) {
                                         .empty => unreachable,
-                                        .scalar => |str| try list.append(try valueFromString(arena_alloc, str)),
+                                        .scalar => |str| try list.append(try Value.fromScalar(arena_alloc, str)),
                                         .flow_list => |str| try list.append(try parseFlowList(arena_alloc, str, self.dupe_behavior)),
                                         .flow_map => |str| try list.append(try parseFlowMap(arena_alloc, str, self.dupe_behavior)),
                                         .line_string, .space_string => |str| {
                                             // string pushes the stack
-                                            const new_string = try appendListGetValue(list, try valueFromString(arena_alloc, str));
+                                            const new_string = try appendListGetValue(list, try Value.fromString(arena_alloc, str));
 
                                             try new_string.string.append(in_line.lineEnding());
 
@@ -708,7 +771,8 @@ pub const Parser = struct {
                                             expect_shift = .none;
                                             switch (value) {
                                                 .empty => expect_shift = .indent,
-                                                .line_string, .space_string, .scalar => |str| try list.append(try valueFromString(arena_alloc, str)),
+                                                .scalar => |str| try list.append(try Value.fromScalar(arena_alloc, str)),
+                                                .line_string, .space_string => |str| try list.append(try Value.fromString(arena_alloc, str)),
                                                 .flow_list => |str| try list.append(try parseFlowList(arena_alloc, str, self.dupe_behavior)),
                                                 .flow_map => |str| try list.append(try parseFlowMap(arena_alloc, str, self.dupe_behavior)),
                                             }
@@ -718,13 +782,14 @@ pub const Parser = struct {
                                             if (expect_shift != .indent)
                                                 return error.UnexpectedIndent;
 
-                                            const new_list = try appendListGetValue(list, .{ .list = Value.List.init(arena_alloc) });
+                                            const new_list = try appendListGetValue(list, Value.newList(arena_alloc));
                                             try stack.append(new_list);
 
                                             expect_shift = .none;
                                             switch (value) {
                                                 .empty => expect_shift = .indent,
-                                                .line_string, .space_string, .scalar => |str| try new_list.list.append(try valueFromString(arena_alloc, str)),
+                                                .scalar => |str| try new_list.list.append(try Value.fromScalar(arena_alloc, str)),
+                                                .line_string, .space_string => |str| try new_list.list.append(try Value.fromString(arena_alloc, str)),
                                                 .flow_list => |str| try new_list.list.append(try parseFlowList(arena_alloc, str, self.dupe_behavior)),
                                                 .flow_map => |str| try new_list.list.append(try parseFlowMap(arena_alloc, str, self.dupe_behavior)),
                                             }
@@ -744,7 +809,7 @@ pub const Parser = struct {
                                     if (line.indent != .indent)
                                         return error.UnexpectedValue;
 
-                                    const new_map = try appendListGetValue(list, .{ .map = Value.Map.init(arena_alloc) });
+                                    const new_map = try appendListGetValue(list, Value.newMap(arena_alloc));
                                     try stack.append(new_map);
                                     expect_shift = .none;
 
@@ -753,7 +818,8 @@ pub const Parser = struct {
                                             dangling_key = pair.key;
                                             expect_shift = .indent;
                                         },
-                                        .line_string, .space_string, .scalar => |str| try new_map.map.put(pair.key, try valueFromString(arena_alloc, str)),
+                                        .scalar => |str| try new_map.map.put(pair.key, try Value.fromScalar(arena_alloc, str)),
+                                        .line_string, .space_string => |str| try new_map.map.put(pair.key, try Value.fromString(arena_alloc, str)),
                                         .flow_list => |str| try new_map.map.put(pair.key, try parseFlowList(arena_alloc, str, self.dupe_behavior)),
                                         .flow_map => |str| try new_map.map.put(pair.key, try parseFlowMap(arena_alloc, str, self.dupe_behavior)),
                                     }
@@ -772,7 +838,7 @@ pub const Parser = struct {
                                 try putMap(
                                     map,
                                     dangling_key orelse return error.Fail,
-                                    try valueFromString(arena_alloc, ""),
+                                    Value.newScalar(arena_alloc),
                                     self.dupe_behavior,
                                 );
                                 dangling_key = null;
@@ -799,14 +865,14 @@ pub const Parser = struct {
 
                                     switch (in_line) {
                                         .empty => unreachable,
-                                        .scalar => |str| try putMap(map, dangling_key.?, try valueFromString(arena_alloc, str), self.dupe_behavior),
+                                        .scalar => |str| try putMap(map, dangling_key.?, try Value.fromScalar(arena_alloc, str), self.dupe_behavior),
                                         .flow_list => |str| try putMap(map, dangling_key.?, try parseFlowList(arena_alloc, str, self.dupe_behavior), self.dupe_behavior),
                                         .flow_map => |str| {
                                             try putMap(map, dangling_key.?, try parseFlowMap(arena_alloc, str, self.dupe_behavior), self.dupe_behavior);
                                         },
                                         .line_string, .space_string => |str| {
                                             // string pushes the stack
-                                            const new_string = try putMapGetValue(map, dangling_key.?, try valueFromString(arena_alloc, str), self.dupe_behavior);
+                                            const new_string = try putMapGetValue(map, dangling_key.?, try Value.fromString(arena_alloc, str), self.dupe_behavior);
                                             try new_string.string.append(in_line.lineEnding());
                                             try stack.append(new_string);
                                             expect_shift = .none;
@@ -827,14 +893,15 @@ pub const Parser = struct {
                                     if (expect_shift != .indent or line.indent != .indent or dangling_key == null)
                                         return error.UnexpectedValue;
 
-                                    const new_list = try putMapGetValue(map, dangling_key.?, .{ .list = Value.List.init(arena_alloc) }, self.dupe_behavior);
+                                    const new_list = try putMapGetValue(map, dangling_key.?, Value.newList(arena_alloc), self.dupe_behavior);
                                     try stack.append(new_list);
                                     dangling_key = null;
 
                                     expect_shift = .none;
                                     switch (value) {
                                         .empty => expect_shift = .indent,
-                                        .line_string, .space_string, .scalar => |str| try new_list.list.append(try valueFromString(arena_alloc, str)),
+                                        .scalar => |str| try new_list.list.append(try Value.fromScalar(arena_alloc, str)),
+                                        .line_string, .space_string => |str| try new_list.list.append(try Value.fromString(arena_alloc, str)),
                                         .flow_list => |str| try new_list.list.append(try parseFlowList(arena_alloc, str, self.dupe_behavior)),
                                         .flow_map => |str| try new_list.list.append(try parseFlowMap(arena_alloc, str, self.dupe_behavior)),
                                     }
@@ -848,7 +915,8 @@ pub const Parser = struct {
                                                 expect_shift = .indent;
                                                 dangling_key = pair.key;
                                             },
-                                            .line_string, .space_string, .scalar => |str| try putMap(map, pair.key, try valueFromString(arena_alloc, str), self.dupe_behavior),
+                                            .scalar => |str| try putMap(map, pair.key, try Value.fromScalar(arena_alloc, str), self.dupe_behavior),
+                                            .line_string, .space_string => |str| try putMap(map, pair.key, try Value.fromString(arena_alloc, str), self.dupe_behavior),
                                             .flow_list => |str| try putMap(map, pair.key, try parseFlowList(arena_alloc, str, self.dupe_behavior), self.dupe_behavior),
                                             .flow_map => |str| try putMap(map, pair.key, try parseFlowMap(arena_alloc, str, self.dupe_behavior), self.dupe_behavior),
                                         },
@@ -856,7 +924,7 @@ pub const Parser = struct {
                                         .indent => {
                                             if (expect_shift != .indent or dangling_key == null) return error.UnexpectedValue;
 
-                                            const new_map = try putMapGetValue(map, dangling_key.?, .{ .map = Value.Map.init(arena_alloc) }, self.dupe_behavior);
+                                            const new_map = try putMapGetValue(map, dangling_key.?, Value.newMap(arena_alloc), self.dupe_behavior);
                                             try stack.append(new_map);
                                             dangling_key = null;
 
@@ -865,7 +933,8 @@ pub const Parser = struct {
                                                     expect_shift = .indent;
                                                     dangling_key = pair.key;
                                                 },
-                                                .line_string, .space_string, .scalar => |str| try new_map.map.put(pair.key, try valueFromString(arena_alloc, str)),
+                                                .scalar => |str| try new_map.map.put(pair.key, try Value.fromScalar(arena_alloc, str)),
+                                                .line_string, .space_string => |str| try new_map.map.put(pair.key, try Value.fromString(arena_alloc, str)),
                                                 .flow_list => |str| try new_map.map.put(pair.key, try parseFlowList(arena_alloc, str, self.dupe_behavior)),
                                                 .flow_map => |str| try new_map.map.put(pair.key, try parseFlowMap(arena_alloc, str, self.dupe_behavior)),
                                             }
@@ -887,28 +956,23 @@ pub const Parser = struct {
         switch (state) {
             .initial => switch (self.default_object) {
                 .string => document.root = .{ .string = std.ArrayList(u8).init(arena_alloc) },
-                .list => document.root = .{ .list = Value.List.init(arena_alloc) },
-                .map => document.root = .{ .map = Value.Map.init(arena_alloc) },
+                .list => document.root = Value.newList(arena_alloc),
+                .map => document.root = Value.newMap(arena_alloc),
                 .fail => return error.EmptyDocument,
             },
             .value => switch (stack.getLast().*) {
                 // remove the final trailing newline or space
-                .string => |*string| _ = string.popOrNull(),
+                .scalar, .string => |*string| _ = string.popOrNull(),
                 // if we have a dangling -, attach an empty string to it
-                .list => |*list| if (expect_shift == .indent) try list.append(try valueFromString(arena_alloc, "")),
+                .list => |*list| if (expect_shift == .indent) try list.append(Value.newScalar(arena_alloc)),
                 // if we have a dangling "key:", attach an empty string to it
-                .map => |*map| if (dangling_key) |dk| try putMap(map, dk, try valueFromString(arena_alloc, ""), self.dupe_behavior),
+                .map => |*map| if (dangling_key) |dk| try putMap(map, dk, Value.newScalar(arena_alloc), self.dupe_behavior),
+                .flow_list, .flow_map => {},
             },
             .done => {},
         }
 
         return document;
-    }
-
-    fn valueFromString(alloc: std.mem.Allocator, buffer: []const u8) Error!Value {
-        var result: Value = .{ .string = try std.ArrayList(u8).initCapacity(alloc, buffer.len) };
-        result.string.appendSliceAssumeCapacity(buffer);
-        return result;
     }
 
     fn parseFlowList(alloc: std.mem.Allocator, contents: []const u8, dupe_behavior: DuplicateKeyBehavior) Error!Value {
@@ -1067,8 +1131,8 @@ pub const FlowParser = struct {
         const parent = self.stack.getLastOrNull() orelse return .done;
 
         return switch (parent.value.*) {
-            .list => .want_list_separator,
-            .map => .want_map_separator,
+            .flow_list => .want_list_separator,
+            .flow_map => .want_map_separator,
             else => return error.BadState,
         };
     }
@@ -1077,12 +1141,12 @@ pub const FlowParser = struct {
         // prime the stack:
         switch (self.state) {
             .want_list_item => {
-                self.root = Value.newList(self.alloc);
+                self.root = Value.newFlowList(self.alloc);
                 self.stack = try FlowStack.initCapacity(self.alloc, 1);
                 self.stack.appendAssumeCapacity(.{ .value = &self.root });
             },
             .want_map_key => {
-                self.root = Value.newMap(self.alloc);
+                self.root = Value.newFlowMap(self.alloc);
                 self.stack = try FlowStack.initCapacity(self.alloc, 1);
                 self.stack.appendAssumeCapacity(.{ .value = &self.root });
             },
@@ -1101,15 +1165,15 @@ pub const FlowParser = struct {
                     ',' => {
                         // empty value
                         const tip = try getStackTip(self.stack);
-                        try tip.value.list.append(try Value.fromString(self.alloc, ""));
+                        try tip.value.flow_list.append(Value.newScalar(self.alloc));
                         tip.item_start = idx + 1;
                     },
                     '{' => {
                         const tip = try getStackTip(self.stack);
 
                         const new_map = try Parser.appendListGetValue(
-                            &tip.value.list,
-                            Value.newMap(self.alloc),
+                            &tip.value.flow_list,
+                            Value.newFlowMap(self.alloc),
                         );
 
                         tip.item_start = idx;
@@ -1120,8 +1184,8 @@ pub const FlowParser = struct {
                         const tip = try getStackTip(self.stack);
 
                         const new_list = try Parser.appendListGetValue(
-                            &tip.value.list,
-                            Value.newList(self.alloc),
+                            &tip.value.flow_list,
+                            Value.newFlowList(self.alloc),
                         );
 
                         tip.item_start = idx;
@@ -1130,10 +1194,8 @@ pub const FlowParser = struct {
                     },
                     ']' => {
                         const finished = self.stack.getLastOrNull() orelse return error.BadState;
-                        if (finished.value.list.items.len > 0 or idx > finished.item_start)
-                            try finished.value.list.append(
-                                try Parser.valueFromString(self.alloc, ""),
-                            );
+                        if (finished.value.flow_list.items.len > 0 or idx > finished.item_start)
+                            try finished.value.flow_list.append(Value.newScalar(self.alloc));
                         self.state = try self.popStack();
                     },
                     else => {
@@ -1145,8 +1207,8 @@ pub const FlowParser = struct {
                     ',' => {
                         const tip = try getStackTip(self.stack);
 
-                        try tip.value.list.append(
-                            try Value.fromString(self.alloc, self.buffer[tip.item_start..idx]),
+                        try tip.value.flow_list.append(
+                            try Value.fromScalar(self.alloc, self.buffer[tip.item_start..idx]),
                         );
                         tip.item_start = idx + 1;
 
@@ -1154,11 +1216,8 @@ pub const FlowParser = struct {
                     },
                     ']' => {
                         const finished = self.stack.getLastOrNull() orelse return error.BadState;
-                        try finished.value.list.append(
-                            try Parser.valueFromString(
-                                self.alloc,
-                                self.buffer[finished.item_start..idx],
-                            ),
+                        try finished.value.flow_list.append(
+                            try Value.fromScalar(self.alloc, self.buffer[finished.item_start..idx]),
                         );
                         self.state = try self.popStack();
                     },
@@ -1204,9 +1263,9 @@ pub const FlowParser = struct {
                     ',' => {
                         const tip = try getStackTip(self.stack);
                         try Parser.putMap(
-                            &tip.value.map,
+                            &tip.value.flow_map,
                             dangling_key.?,
-                            try Parser.valueFromString(self.alloc, ""),
+                            Value.newScalar(self.alloc),
                             dupe_behavior,
                         );
 
@@ -1217,9 +1276,9 @@ pub const FlowParser = struct {
                         const tip = try getStackTip(self.stack);
 
                         const new_list = try Parser.putMapGetValue(
-                            &tip.value.map,
+                            &tip.value.flow_map,
                             dangling_key.?,
-                            Value.newList(self.alloc),
+                            Value.newFlowList(self.alloc),
                             dupe_behavior,
                         );
 
@@ -1231,9 +1290,9 @@ pub const FlowParser = struct {
                         const tip = try getStackTip(self.stack);
 
                         const new_map = try Parser.putMapGetValue(
-                            &tip.value.map,
+                            &tip.value.flow_map,
                             dangling_key.?,
-                            Value.newMap(self.alloc),
+                            Value.newFlowMap(self.alloc),
                             dupe_behavior,
                         );
 
@@ -1245,9 +1304,9 @@ pub const FlowParser = struct {
                         // the value is an empty string and this map is closed
                         const tip = try getStackTip(self.stack);
                         try Parser.putMap(
-                            &tip.value.map,
+                            &tip.value.flow_map,
                             dangling_key.?,
-                            try Parser.valueFromString(self.alloc, ""),
+                            Value.newScalar(self.alloc),
                             dupe_behavior,
                         );
 
@@ -1263,9 +1322,9 @@ pub const FlowParser = struct {
                     ',', '}' => |term| {
                         const tip = try getStackTip(self.stack);
                         try Parser.putMap(
-                            &tip.value.map,
+                            &tip.value.flow_map,
                             dangling_key.?,
-                            try Parser.valueFromString(self.alloc, self.buffer[tip.item_start..idx]),
+                            try Value.fromScalar(self.alloc, self.buffer[tip.item_start..idx]),
                             dupe_behavior,
                         );
                         dangling_key = null;
