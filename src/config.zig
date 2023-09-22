@@ -63,292 +63,370 @@
 
 const std = @import("std");
 
+pub const IndexSlice = struct { start: usize, len: usize };
+
 pub const Diagnostics = struct {
     row: usize,
     span: struct { absolute: usize, line_offset: usize, length: usize },
     message: []const u8,
 };
 
-pub const LineTokenizer = struct {
-    buffer: []const u8,
-    index: usize = 0,
-    indentation: IndentationType = .immaterial,
-    last_indent: usize = 0,
-    diagnostics: *Diagnostics,
+pub const LineBuffer = struct {
+    allocator: std.mem.Allocator,
+    buffer: []u8,
+    used: usize,
+    window: IndexSlice,
 
-    row: usize = 0,
+    pub const default_capacity: usize = 4096;
+    pub const Error = std.mem.Allocator.Error;
 
-    const Error = error{
-        BadToken,
-        MixedIndentation,
-        UnquantizedIndentation,
-        TooMuchIndentation,
-        MissingNewline,
-        TrailingWhitespace,
-        Impossible,
-    };
+    pub fn init(allocator: std.mem.Allocator) Error!LineBuffer {
+        return initCapacity(allocator, default_capacity);
+    }
 
-    const IndentationType = union(enum) {
-        immaterial: void,
-        spaces: usize,
-        tabs: void,
-    };
+    pub fn initCapacity(allocator: std.mem.Allocator, capacity: usize) Error!LineBuffer {
+        return .{
+            .allocator = allocator,
+            .buffer = try allocator.alloc(u8, capacity),
+            .used = 0,
+            .window = .{ .start = 0, .len = 0 },
+        };
+    }
 
-    const InlineItem = union(enum) {
-        empty: void,
-        scalar: []const u8,
-        line_string: []const u8,
-        space_string: []const u8,
+    pub fn feed(self: *LineBuffer, data: []const u8) Error!void {
+        if (data.len == 0) return;
+        // TODO: check for usize overflow here if we want Maximum Robustness
+        const new_window_len = self.window.len + data.len;
 
-        flow_list: []const u8,
-        flow_map: []const u8,
-
-        fn lineEnding(self: InlineItem) u8 {
-            return switch (self) {
-                .line_string => '\n',
-                .space_string => ' ',
-                else => unreachable,
-            };
+        // data cannot fit in the buffer with our scan window, so we have to realloc
+        if (new_window_len > self.buffer.len) {
+            // TODO: adopt an overallocation strategy? Will potentially avoid allocating
+            //       on every invocation but will cause the buffer to oversize
+            try self.allocator.realloc(self.buffer, new_window_len);
+            self.rehome();
+            @memcpy(self.buffer[self.used..].ptr, data);
+            self.used = new_window_len;
+            self.window.len = new_window_len;
         }
-    };
+        // data will fit, but needs to be moved in the buffer
+        else if (self.window.start + new_window_len > self.buffer.len) {
+            self.rehome();
+            @memcpy(self.buffer[self.used..].ptr, data);
+            self.used = new_window_len;
+            self.window.len = new_window_len;
+        }
+        // data can simply be appended
+        else {
+            @memcpy(self.buffer[self.used..].ptr, data);
+        }
+    }
 
-    const LineContents = union(enum) {
-        comment: []const u8,
-
-        in_line: InlineItem,
-        list_item: InlineItem,
-        map_item: struct { key: []const u8, val: InlineItem },
-    };
-
-    // we can dedent multiple levels at once. Example:
-    //
-    // foo:
-    //   bar:
-    //     > a
-    //     > string
-    // baz: [qux]
-    //
-    // capturing this is conceptually simple, but implementing it without complex
-    // indentation tracking requires quantizing the indentation. This means our
-    // IndentationType will also need to track the number of spaces used for
-    // indentation, as detected. Then every line we have to check indent rem the
-    // quantization level == 0 (otherwise we broke quantization) and compute indent
-    // div the quantization level to give us our effective indentation level.
-
-    const ShiftDirection = enum { indent, dedent, none };
-    const RelativeIndent = union(ShiftDirection) {
-        indent: void,
-        dedent: usize,
-        none: void,
-    };
-
-    const Line = struct {
-        indent: RelativeIndent,
-        contents: LineContents,
-        raw: []const u8,
-    };
-
-    pub fn next(self: *LineTokenizer) Error!?Line {
-        if (self.index == self.buffer.len) return null;
-
-        var indent: usize = 0;
-        var offset: usize = 0;
-
-        for (self.buffer[self.index..], 0..) |char, idx| {
-            switch (char) {
-                ' ' => {
-                    switch (self.indentation) {
-                        // There's a weird coupling here because we can't set this until
-                        // all spaces have been consumed. I also thought about ignoring
-                        // spaces on comment lines since those don't affect the
-                        // relative indent/dedent, but then we would allow comments
-                        // to ignore our indent quantum, which I dislike due to it making
-                        // ugly documents.
-                        .immaterial => self.indentation = .{ .spaces = 0 },
-                        .spaces => {},
-                        .tabs => return error.MixedIndentation,
-                    }
-                    indent += 1;
-                },
-                '\t' => {
-                    switch (self.indentation) {
-                        .immaterial => self.indentation = .tabs,
-                        .spaces => return error.MixedIndentation,
-                        .tabs => {},
-                    }
-                    indent += 1;
-                },
-                '\r' => {
-                    return error.BadToken;
-                },
-                '\n' => {
-                    // don't even emit anything for empty rows.
-                    self.row += 1;
-                    offset = idx + 1;
-                    // if it's too hard to deal with, Just Make It An Error!!!
-                    // an empty line with whitespace on it is garbage. It can mess with
-                    // the indentation detection grossly in a way that is annoying to
-                    // deal with. Besides, having whitespace-only lines in a document
-                    // is essentially terrorism, with which negotiations are famously
-                    // not permitted.
-                    if (indent > 0) return error.TrailingWhitespace;
-                },
-                else => break,
-            }
-        } else {
-            std.debug.assert(self.buffer.len == self.index + indent + offset + 1);
-            self.index = self.buffer.len;
-            // this prong will get hit when the document only consists of whitespace
+    /// The memory returned by this function is valid until the next call to `feed`.
+    /// The resulting slice does not include the newline character.
+    pub fn nextLine(self: *LineBuffer) ?[]const u8 {
+        if (self.window.start >= self.buffer.len or self.window.len == 0)
             return null;
-        }
 
-        var quantized: usize = if (self.indentation == .spaces) blk: {
-            if (self.indentation.spaces == 0) {
-                self.indentation.spaces = indent;
-            }
-            if (@rem(indent, self.indentation.spaces) != 0)
-                return error.UnquantizedIndentation;
+        const window = self.buffer[self.window.start..][0..self.window.len];
+        const split = std.mem.indexOfScalar(u8, window, '\n') orelse return null;
 
-            break :blk @divExact(indent, self.indentation.spaces);
-        } else indent;
+        self.window.start += split + 1;
+        self.window.len -= split + 1;
 
-        const relative: RelativeIndent = if (quantized > self.last_indent) rel: {
-            if ((quantized - self.last_indent) > 1)
-                return error.TooMuchIndentation;
-            break :rel .indent;
-        } else if (quantized < self.last_indent)
-            .{ .dedent = self.last_indent - quantized }
+        return window[0..split];
+    }
+
+    fn rehome(self: *LineBuffer) void {
+        if (self.window.start == 0) return;
+
+        const window = self.buffer[self.window.start..][0..self.window.len];
+
+        if (self.window.len > self.window.start)
+            std.mem.copyForwards(u8, self.buffer, window)
         else
-            .none;
+            @memcpy(self.buffer.ptr, window);
 
-        offset += indent;
+        self.window.start = 0;
+        self.used = window.len;
+    }
+};
 
-        defer {
-            self.row += 1;
-            self.last_indent = quantized;
-            self.index += offset;
-        }
+pub const FixedLineBuffer = struct {
+    buffer: []const u8,
+    window: IndexSlice,
 
-        const line = try consumeLine(self.buffer[self.index + offset ..]);
-        offset += line.len + 1;
+    pub fn init(data: []const u8) FixedLineBuffer {
+        return .{ .buffer = data, .window = .{ .start = 0, .len = data.len } };
+    }
 
-        // this should not be possible, as empty lines are caught earlier.
-        if (line.len == 0) return error.Impossible;
+    pub fn nextLine(self: *FixedLineBuffer) ?[]const u8 {
+        if (self.window.start >= self.buffer.len or self.window.len == 0)
+            return null;
 
-        switch (line[0]) {
-            '#' => {
-                // simply lie about indentation when the line is a comment.
-                quantized = self.last_indent;
-                return .{
-                    .indent = .none,
-                    .contents = .{ .comment = line[1..] },
-                    .raw = line,
-                };
-            },
-            '|', '>', '[', '{' => {
-                return .{
-                    .indent = relative,
-                    .contents = .{ .in_line = try detectInlineItem(line) },
-                    .raw = line,
-                };
-            },
-            '-' => {
-                if (line.len > 1 and line[1] != ' ') return error.BadToken;
+        const window = self.buffer[self.window.start..][0..self.window.len];
+        const split = std.mem.indexOfScalar(u8, window, '\n') orelse return null;
 
-                return if (line.len == 1) .{
-                    .indent = relative,
-                    .contents = .{ .list_item = .empty },
-                    .raw = line,
-                } else .{
-                    .indent = relative,
-                    .contents = .{ .list_item = try detectInlineItem(line[2..]) },
-                    .raw = line,
-                };
-            },
-            else => {
-                for (line, 0..) |char, idx| {
-                    if (char == ':') {
-                        if (idx + 1 == line.len) return .{
-                            .indent = relative,
-                            .contents = .{ .map_item = .{ .key = line[0..idx], .val = .empty } },
+        self.window.start += split + 1;
+        self.window.len -= split + 1;
+
+        return window[0..split];
+    }
+};
+
+const IndentationType = union(enum) {
+    immaterial: void,
+    spaces: usize,
+    tabs: void,
+};
+
+const InlineItem = union(enum) {
+    empty: void,
+    scalar: []const u8,
+    line_string: []const u8,
+    space_string: []const u8,
+
+    flow_list: []const u8,
+    flow_map: []const u8,
+
+    fn lineEnding(self: InlineItem) u8 {
+        return switch (self) {
+            .line_string => '\n',
+            .space_string => ' ',
+            else => unreachable,
+        };
+    }
+};
+
+const LineContents = union(enum) {
+    comment: []const u8,
+
+    in_line: InlineItem,
+    list_item: InlineItem,
+    map_item: struct { key: []const u8, val: InlineItem },
+};
+
+// we can dedent multiple levels at once. Example:
+//
+// foo:
+//   bar:
+//     > a
+//     > string
+// baz: [qux]
+//
+// capturing this is conceptually simple, but implementing it without complex
+// indentation tracking requires quantizing the indentation. This means our
+// IndentationType will also need to track the number of spaces used for
+// indentation, as detected. Then every line we have to check indent rem the
+// quantization level == 0 (otherwise we broke quantization) and compute indent
+// div the quantization level to give us our effective indentation level.
+
+const ShiftDirection = enum { indent, dedent, none };
+const RelativeIndent = union(ShiftDirection) {
+    indent: void,
+    dedent: usize,
+    none: void,
+};
+
+const Line = struct {
+    indent: RelativeIndent,
+    contents: LineContents,
+    raw: []const u8,
+};
+
+pub fn LineTokenizer(comptime Buffer: type) type {
+    return struct {
+        buffer: Buffer,
+        index: usize = 0,
+        indentation: IndentationType = .immaterial,
+        last_indent: usize = 0,
+        diagnostics: *Diagnostics,
+        row: usize = 0,
+
+        const Error = error{
+            BadToken,
+            MixedIndentation,
+            UnquantizedIndentation,
+            TooMuchIndentation,
+            MissingNewline,
+            TrailingWhitespace,
+            Impossible,
+        };
+
+        pub fn next(self: *@This()) Error!?Line {
+            lineloop: while (self.buffer.nextLine()) |raw_line| {
+                var indent: usize = 0;
+                for (raw_line, 0..) |char, idx| {
+                    switch (char) {
+                        ' ' => {
+                            switch (self.indentation) {
+                                // There's a weird coupling here because we can't set this until
+                                // all spaces have been consumed. I also thought about ignoring
+                                // spaces on comment lines since those don't affect the
+                                // relative indent/dedent, but then we would allow comments
+                                // to ignore our indent quantum, which I dislike due to it making
+                                // ugly documents.
+                                .immaterial => self.indentation = .{ .spaces = 0 },
+                                .spaces => {},
+                                .tabs => return error.MixedIndentation,
+                            }
+                        },
+                        '\t' => {
+                            switch (self.indentation) {
+                                .immaterial => self.indentation = .tabs,
+                                .spaces => return error.MixedIndentation,
+                                .tabs => {},
+                            }
+                        },
+                        '\r' => {
+                            return error.BadToken;
+                        },
+                        else => {
+                            indent = idx;
+                            break;
+                        },
+                    }
+                } else {
+                    if (raw_line.len > 0) return error.TrailingWhitespace;
+                    continue :lineloop;
+                }
+
+                var quantized: usize = if (self.indentation == .spaces) quant: {
+                    if (self.indentation.spaces == 0) {
+                        self.indentation.spaces = indent;
+                    }
+                    if (@rem(indent, self.indentation.spaces) != 0)
+                        return error.UnquantizedIndentation;
+
+                    break :quant @divExact(indent, self.indentation.spaces);
+                } else indent;
+
+                const relative: RelativeIndent = if (quantized > self.last_indent) rel: {
+                    if ((quantized - self.last_indent) > 1)
+                        return error.TooMuchIndentation;
+                    break :rel .indent;
+                } else if (quantized < self.last_indent)
+                    .{ .dedent = self.last_indent - quantized }
+                else
+                    .none;
+
+                defer {
+                    self.row += 1;
+                    self.last_indent = quantized;
+                }
+
+                const line = raw_line[indent..];
+
+                // this should not be possible, as empty lines are caught earlier.
+                if (line.len == 0) return error.Impossible;
+
+                switch (line[0]) {
+                    '#' => {
+                        // simply lie about indentation when the line is a comment.
+                        quantized = self.last_indent;
+                        return .{
+                            .indent = .none,
+                            .contents = .{ .comment = line[1..] },
                             .raw = line,
                         };
+                    },
+                    '|', '>', '[', '{' => {
+                        return .{
+                            .indent = relative,
+                            .contents = .{ .in_line = try detectInlineItem(line) },
+                            .raw = line,
+                        };
+                    },
+                    '-' => {
+                        if (line.len > 1 and line[1] != ' ') return error.BadToken;
 
-                        if (line[idx + 1] != ' ') return error.BadToken;
+                        return if (line.len == 1) .{
+                            .indent = relative,
+                            .contents = .{ .list_item = .empty },
+                            .raw = line,
+                        } else .{
+                            .indent = relative,
+                            .contents = .{ .list_item = try detectInlineItem(line[2..]) },
+                            .raw = line,
+                        };
+                    },
+                    else => {
+                        for (line, 0..) |char, idx| {
+                            if (char == ':') {
+                                if (idx + 1 == line.len) return .{
+                                    .indent = relative,
+                                    .contents = .{ .map_item = .{ .key = line[0..idx], .val = .empty } },
+                                    .raw = line,
+                                };
+
+                                if (line[idx + 1] != ' ') return error.BadToken;
+
+                                return .{
+                                    .indent = relative,
+                                    .contents = .{ .map_item = .{
+                                        .key = line[0..idx],
+                                        .val = try detectInlineItem(line[idx + 2 ..]),
+                                    } },
+                                    .raw = line,
+                                };
+                            }
+                        }
 
                         return .{
                             .indent = relative,
-                            .contents = .{ .map_item = .{
-                                .key = line[0..idx],
-                                .val = try detectInlineItem(line[idx + 2 ..]),
-                            } },
+                            .contents = .{ .in_line = .{ .scalar = line } },
                             .raw = line,
                         };
-                    }
+                    },
                 }
 
-                return .{
-                    .indent = relative,
-                    .contents = .{ .in_line = .{ .scalar = line } },
-                    .raw = line,
-                };
-            },
+                // somehow everything else has failed
+                return error.Impossible;
+            }
+            return null;
         }
-    }
 
-    fn detectInlineItem(buf: []const u8) Error!InlineItem {
-        if (buf.len == 0) return .empty;
+        fn detectInlineItem(buf: []const u8) Error!InlineItem {
+            if (buf.len == 0) return .empty;
 
-        switch (buf[0]) {
-            '>', '|' => |char| {
-                if (buf.len > 1 and buf[1] != ' ') return error.BadToken;
+            switch (buf[0]) {
+                '>', '|' => |char| {
+                    if (buf.len > 1 and buf[1] != ' ') return error.BadToken;
 
-                const slice: []const u8 = switch (buf[buf.len - 1]) {
-                    ' ', '\t' => return error.TrailingWhitespace,
-                    '|' => buf[@min(2, buf.len) .. buf.len - @intFromBool(buf.len > 1)],
-                    else => buf[@min(2, buf.len)..buf.len],
-                };
+                    const slice: []const u8 = switch (buf[buf.len - 1]) {
+                        ' ', '\t' => return error.TrailingWhitespace,
+                        '|' => buf[@min(2, buf.len) .. buf.len - @intFromBool(buf.len > 1)],
+                        else => buf[@min(2, buf.len)..buf.len],
+                    };
 
-                return if (char == '>')
-                    .{ .line_string = slice }
-                else
-                    .{ .space_string = slice };
-            },
-            '[' => {
-                if (buf.len < 2 or buf[buf.len - 1] != ']')
-                    return error.BadToken;
+                    return if (char == '>')
+                        .{ .line_string = slice }
+                    else
+                        .{ .space_string = slice };
+                },
+                '[' => {
+                    if (buf.len < 2 or buf[buf.len - 1] != ']')
+                        return error.BadToken;
 
-                // keep the closing ] for the flow parser
-                return .{ .flow_list = buf[1..] };
-            },
-            '{' => {
-                if (buf.len < 2 or buf[buf.len - 1] != '}')
-                    return error.BadToken;
+                    // keep the closing ] for the flow parser
+                    return .{ .flow_list = buf[1..] };
+                },
+                '{' => {
+                    if (buf.len < 2 or buf[buf.len - 1] != '}')
+                        return error.BadToken;
 
-                // keep the closing } fpr the flow parser
-                return .{ .flow_map = buf[1..] };
-            },
-            else => {
-                if (buf[buf.len - 1] == ' ' or buf[buf.len - 1] == '\t')
-                    return error.TrailingWhitespace;
+                    // keep the closing } fpr the flow parser
+                    return .{ .flow_map = buf[1..] };
+                },
+                else => {
+                    if (buf[buf.len - 1] == ' ' or buf[buf.len - 1] == '\t')
+                        return error.TrailingWhitespace;
 
-                return .{ .scalar = buf };
-            },
-        }
-    }
-
-    fn consumeLine(buf: []const u8) ![]const u8 {
-        for (buf, 0..) |char, idx| {
-            switch (char) {
-                '\n' => return buf[0..idx],
-                '\r' => return error.BadToken,
-                else => {},
+                    return .{ .scalar = buf };
+                },
             }
         }
-
-        return error.MissingNewline;
-    }
-};
+    };
+}
 
 pub const Value = union(enum) {
     pub const String = std.ArrayList(u8);
@@ -489,7 +567,7 @@ pub const Parser = struct {
         DuplicateKey,
         BadMapEntry,
         Fail,
-    } || LineTokenizer.Error || FlowParser.Error || std.mem.Allocator.Error;
+    } || LineTokenizer(FixedLineBuffer).Error || FlowParser.Error || std.mem.Allocator.Error;
 
     pub const DuplicateKeyBehavior = enum {
         use_first,
@@ -536,7 +614,7 @@ pub const Parser = struct {
         document: Document,
         value_stack: Stack,
         state: ParseState = .initial,
-        expect_shift: LineTokenizer.ShiftDirection = .none,
+        expect_shift: ShiftDirection = .none,
         dangling_key: ?[]const u8 = null,
 
         pub fn init(alloc: std.mem.Allocator) State {
@@ -557,12 +635,16 @@ pub const Parser = struct {
         const arena_alloc = document.arena.allocator();
 
         var state: ParseState = .initial;
-        var expect_shift: LineTokenizer.ShiftDirection = .none;
+        var expect_shift: ShiftDirection = .none;
         var dangling_key: ?[]const u8 = null;
         var stack = std.ArrayList(*Value).init(arena_alloc);
         defer stack.deinit();
 
-        var tok: LineTokenizer = .{ .buffer = buffer, .diagnostics = &self.diagnostics };
+        var tok: LineTokenizer(FixedLineBuffer) = .{
+            .buffer = FixedLineBuffer.init(buffer),
+            .diagnostics = &self.diagnostics,
+        };
+
         while (try tok.next()) |line| {
             if (line.contents == .comment) continue;
 
