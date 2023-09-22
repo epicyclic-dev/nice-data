@@ -727,7 +727,7 @@ pub const Parser = struct {
                                         // key somewhere until we can consume the
                                         // value. More parser state to lug along.
 
-                                        dangling_key = pair.key;
+                                        dangling_key = try arena_alloc.dupe(u8, pair.key);
                                         state = .value;
                                     },
                                     .scalar => |str| {
@@ -897,7 +897,7 @@ pub const Parser = struct {
 
                                     switch (pair.val) {
                                         .empty => {
-                                            dangling_key = pair.key;
+                                            dangling_key = try arena_alloc.dupe(u8, pair.key);
                                             expect_shift = .indent;
                                         },
                                         .scalar => |str| try new_map.map.put(pair.key, try Value.fromScalar(arena_alloc, str)),
@@ -995,7 +995,7 @@ pub const Parser = struct {
                                         .none, .dedent => switch (pair.val) {
                                             .empty => {
                                                 expect_shift = .indent;
-                                                dangling_key = pair.key;
+                                                dangling_key = try arena_alloc.dupe(u8, pair.key);
                                             },
                                             .scalar => |str| try putMap(map, pair.key, try Value.fromScalar(arena_alloc, str), self.dupe_behavior),
                                             .line_string, .space_string => |str| try putMap(map, pair.key, try Value.fromString(arena_alloc, str), self.dupe_behavior),
@@ -1013,7 +1013,7 @@ pub const Parser = struct {
                                             switch (pair.val) {
                                                 .empty => {
                                                     expect_shift = .indent;
-                                                    dangling_key = pair.key;
+                                                    dangling_key = try arena_alloc.dupe(u8, pair.key);
                                                 },
                                                 .scalar => |str| try new_map.map.put(pair.key, try Value.fromScalar(arena_alloc, str)),
                                                 .line_string, .space_string => |str| try new_map.map.put(pair.key, try Value.fromString(arena_alloc, str)),
@@ -1334,7 +1334,7 @@ pub const FlowParser = struct {
                 .consuming_map_key => switch (char) {
                     ':' => {
                         const tip = try getStackTip(self.stack);
-                        dangling_key = self.buffer[tip.item_start..idx];
+                        dangling_key = try self.alloc.dupe(u8, self.buffer[tip.item_start..idx]);
 
                         self.state = .want_map_value;
                     },
