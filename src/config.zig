@@ -430,7 +430,7 @@ pub fn LineTokenizer(comptime Buffer: type) type {
 
 pub const Value = union(enum) {
     pub const String = std.ArrayList(u8);
-    pub const Map = std.StringHashMap(Value);
+    pub const Map = std.StringArrayHashMap(Value);
     pub const List = std.ArrayList(Value);
     pub const TagType = @typeInfo(Value).Union.tag_type.?;
 
