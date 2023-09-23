@@ -692,34 +692,22 @@ pub const Parser = struct {
                             .list_item => |value| {
                                 document.root = Value.newList(arena_alloc);
                                 try stack.append(&document.root);
+                                state = .value;
 
                                 switch (value) {
-                                    .empty => {
-                                        expect_shift = .indent;
-                                        state = .value;
-                                    },
-                                    .scalar => |str| {
-                                        try document.root.list.append(try Value.fromScalar(arena_alloc, str));
-                                        state = .value;
-                                    },
-                                    .line_string, .space_string => |str| {
-                                        try document.root.list.append(try Value.fromString(arena_alloc, str));
-                                        state = .value;
-                                    },
-                                    .flow_list => |str| {
-                                        try document.root.list.append(try parseFlow(arena_alloc, str, .flow_list, self.dupe_behavior));
-                                        state = .value;
-                                    },
-                                    .flow_map => |str| {
-                                        try document.root.list.append(try parseFlow(arena_alloc, str, .flow_map, self.dupe_behavior));
-                                        state = .value;
-                                    },
+                                    .empty => expect_shift = .indent,
+                                    .scalar => |str| try document.root.list.append(try Value.fromScalar(arena_alloc, str)),
+                                    .line_string, .space_string => |str| try document.root.list.append(try Value.fromString(arena_alloc, str)),
+                                    .flow_list => |str| try document.root.list.append(try parseFlow(arena_alloc, str, .flow_list, self.dupe_behavior)),
+                                    .flow_map => |str| try document.root.list.append(try parseFlow(arena_alloc, str, .flow_map, self.dupe_behavior)),
                                 }
                             },
                             .map_item => |pair| {
                                 document.root = Value.newMap(arena_alloc);
                                 try stack.append(&document.root);
+                                state = .value;
 
+                                const dupekey = try arena_alloc.dupe(u8, pair.key);
                                 switch (pair.val) {
                                     .empty => {
                                         expect_shift = .indent;
@@ -729,29 +717,12 @@ pub const Parser = struct {
                                         // key somewhere until we can consume the
                                         // value. More parser state to lug along.
 
-                                        dangling_key = try arena_alloc.dupe(u8, pair.key);
-                                        state = .value;
+                                        dangling_key = dupekey;
                                     },
-                                    .scalar => |str| {
-                                        // we can do direct puts here because this is
-                                        // the very first line of the document
-                                        try document.root.map.put(pair.key, try Value.fromScalar(arena_alloc, str));
-                                        state = .value;
-                                    },
-                                    .line_string, .space_string => |str| {
-                                        // we can do direct puts here because this is
-                                        // the very first line of the document
-                                        try document.root.map.put(pair.key, try Value.fromString(arena_alloc, str));
-                                        state = .value;
-                                    },
-                                    .flow_list => |str| {
-                                        try document.root.map.put(pair.key, try parseFlow(arena_alloc, str, .flow_list, self.dupe_behavior));
-                                        state = .value;
-                                    },
-                                    .flow_map => |str| {
-                                        try document.root.map.put(pair.key, try parseFlow(arena_alloc, str, .flow_map, self.dupe_behavior));
-                                        state = .value;
-                                    },
+                                    .scalar => |str| try document.root.map.put(dupekey, try Value.fromScalar(arena_alloc, str)),
+                                    .line_string, .space_string => |str| try document.root.map.put(dupekey, try Value.fromString(arena_alloc, str)),
+                                    .flow_list => |str| try document.root.map.put(dupekey, try parseFlow(arena_alloc, str, .flow_list, self.dupe_behavior)),
+                                    .flow_map => |str| try document.root.map.put(dupekey, try parseFlow(arena_alloc, str, .flow_map, self.dupe_behavior)),
                                 }
                             },
                         }
@@ -962,15 +933,16 @@ pub const Parser = struct {
                                 .map_item => |pair| {
                                     if (flop or (line.indent == .none or line.indent == .dedent)) {
                                         expect_shift = .none;
+                                        const dupekey = try arena_alloc.dupe(u8, pair.key);
                                         switch (pair.val) {
                                             .empty => {
                                                 expect_shift = .indent;
-                                                dangling_key = try arena_alloc.dupe(u8, pair.key);
+                                                dangling_key = dupekey;
                                             },
-                                            .scalar => |str| try putMap(map, pair.key, try Value.fromScalar(arena_alloc, str), self.dupe_behavior),
-                                            .line_string, .space_string => |str| try putMap(map, pair.key, try Value.fromString(arena_alloc, str), self.dupe_behavior),
-                                            .flow_list => |str| try putMap(map, pair.key, try parseFlow(arena_alloc, str, .flow_list, self.dupe_behavior), self.dupe_behavior),
-                                            .flow_map => |str| try putMap(map, pair.key, try parseFlow(arena_alloc, str, .flow_map, self.dupe_behavior), self.dupe_behavior),
+                                            .scalar => |str| try putMap(map, dupekey, try Value.fromScalar(arena_alloc, str), self.dupe_behavior),
+                                            .line_string, .space_string => |str| try putMap(map, dupekey, try Value.fromString(arena_alloc, str), self.dupe_behavior),
+                                            .flow_list => |str| try putMap(map, dupekey, try parseFlow(arena_alloc, str, .flow_list, self.dupe_behavior), self.dupe_behavior),
+                                            .flow_map => |str| try putMap(map, dupekey, try parseFlow(arena_alloc, str, .flow_map, self.dupe_behavior), self.dupe_behavior),
                                         }
                                     } else if (line.indent == .indent) {
                                         if (expect_shift != .indent or dangling_key == null) return error.UnexpectedValue;
@@ -1064,8 +1036,6 @@ pub const Parser = struct {
         root_type: Value.TagType,
         dupe_behavior: DuplicateKeyBehavior,
     ) Error!Value {
-        // prime the stack:
-
         var root: Value = switch (root_type) {
             .flow_list => Value.newFlowList(alloc),
             .flow_map => Value.newFlowMap(alloc),
