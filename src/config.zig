@@ -566,8 +566,10 @@ pub const Parser = struct {
         EmptyDocument,
         DuplicateKey,
         BadMapEntry,
+        BadState,
+        BadToken,
         Fail,
-    } || LineTokenizer(FixedLineBuffer).Error || FlowParser.Error || std.mem.Allocator.Error;
+    } || LineTokenizer(FixedLineBuffer).Error || std.mem.Allocator.Error;
 
     pub const DuplicateKeyBehavior = enum {
         use_first,
@@ -679,11 +681,11 @@ pub const Parser = struct {
                                     state = .value;
                                 },
                                 .flow_list => |str| {
-                                    document.root = try parseFlowList(arena_alloc, str, self.dupe_behavior);
+                                    document.root = try parseFlow(arena_alloc, str, .flow_list, self.dupe_behavior);
                                     state = .done;
                                 },
                                 .flow_map => |str| {
-                                    document.root = try parseFlowMap(arena_alloc, str, self.dupe_behavior);
+                                    document.root = try parseFlow(arena_alloc, str, .flow_map, self.dupe_behavior);
                                     state = .done;
                                 },
                             },
@@ -705,11 +707,11 @@ pub const Parser = struct {
                                         state = .value;
                                     },
                                     .flow_list => |str| {
-                                        try document.root.list.append(try parseFlowList(arena_alloc, str, self.dupe_behavior));
+                                        try document.root.list.append(try parseFlow(arena_alloc, str, .flow_list, self.dupe_behavior));
                                         state = .value;
                                     },
                                     .flow_map => |str| {
-                                        try document.root.list.append(try parseFlowMap(arena_alloc, str, self.dupe_behavior));
+                                        try document.root.list.append(try parseFlow(arena_alloc, str, .flow_map, self.dupe_behavior));
                                         state = .value;
                                     },
                                 }
@@ -743,11 +745,11 @@ pub const Parser = struct {
                                         state = .value;
                                     },
                                     .flow_list => |str| {
-                                        try document.root.map.put(pair.key, try parseFlowList(arena_alloc, str, self.dupe_behavior));
+                                        try document.root.map.put(pair.key, try parseFlow(arena_alloc, str, .flow_list, self.dupe_behavior));
                                         state = .value;
                                     },
                                     .flow_map => |str| {
-                                        try document.root.map.put(pair.key, try parseFlowMap(arena_alloc, str, self.dupe_behavior));
+                                        try document.root.map.put(pair.key, try parseFlow(arena_alloc, str, .flow_map, self.dupe_behavior));
                                         state = .value;
                                     },
                                 }
@@ -833,8 +835,8 @@ pub const Parser = struct {
                                     switch (in_line) {
                                         .empty => unreachable,
                                         .scalar => |str| try list.append(try Value.fromScalar(arena_alloc, str)),
-                                        .flow_list => |str| try list.append(try parseFlowList(arena_alloc, str, self.dupe_behavior)),
-                                        .flow_map => |str| try list.append(try parseFlowMap(arena_alloc, str, self.dupe_behavior)),
+                                        .flow_list => |str| try list.append(try parseFlow(arena_alloc, str, .flow_list, self.dupe_behavior)),
+                                        .flow_map => |str| try list.append(try parseFlow(arena_alloc, str, .flow_map, self.dupe_behavior)),
                                         .line_string, .space_string => |str| {
                                             // string pushes the stack
                                             const new_string = try appendListGetValue(list, try Value.fromString(arena_alloc, str));
@@ -852,8 +854,8 @@ pub const Parser = struct {
                                             .empty => expect_shift = .indent,
                                             .scalar => |str| try list.append(try Value.fromScalar(arena_alloc, str)),
                                             .line_string, .space_string => |str| try list.append(try Value.fromString(arena_alloc, str)),
-                                            .flow_list => |str| try list.append(try parseFlowList(arena_alloc, str, self.dupe_behavior)),
-                                            .flow_map => |str| try list.append(try parseFlowMap(arena_alloc, str, self.dupe_behavior)),
+                                            .flow_list => |str| try list.append(try parseFlow(arena_alloc, str, .flow_list, self.dupe_behavior)),
+                                            .flow_map => |str| try list.append(try parseFlow(arena_alloc, str, .flow_map, self.dupe_behavior)),
                                         }
                                     } else if (line.indent == .indent) {
                                         if (expect_shift != .indent) return error.UnexpectedIndent;
@@ -924,9 +926,9 @@ pub const Parser = struct {
                                     switch (in_line) {
                                         .empty => unreachable,
                                         .scalar => |str| try putMap(map, dangling_key.?, try Value.fromScalar(arena_alloc, str), self.dupe_behavior),
-                                        .flow_list => |str| try putMap(map, dangling_key.?, try parseFlowList(arena_alloc, str, self.dupe_behavior), self.dupe_behavior),
+                                        .flow_list => |str| try putMap(map, dangling_key.?, try parseFlow(arena_alloc, str, .flow_list, self.dupe_behavior), self.dupe_behavior),
                                         .flow_map => |str| {
-                                            try putMap(map, dangling_key.?, try parseFlowMap(arena_alloc, str, self.dupe_behavior), self.dupe_behavior);
+                                            try putMap(map, dangling_key.?, try parseFlow(arena_alloc, str, .flow_map, self.dupe_behavior), self.dupe_behavior);
                                         },
                                         .line_string, .space_string => |str| {
                                             // string pushes the stack
@@ -967,8 +969,8 @@ pub const Parser = struct {
                                             },
                                             .scalar => |str| try putMap(map, pair.key, try Value.fromScalar(arena_alloc, str), self.dupe_behavior),
                                             .line_string, .space_string => |str| try putMap(map, pair.key, try Value.fromString(arena_alloc, str), self.dupe_behavior),
-                                            .flow_list => |str| try putMap(map, pair.key, try parseFlowList(arena_alloc, str, self.dupe_behavior), self.dupe_behavior),
-                                            .flow_map => |str| try putMap(map, pair.key, try parseFlowMap(arena_alloc, str, self.dupe_behavior), self.dupe_behavior),
+                                            .flow_list => |str| try putMap(map, pair.key, try parseFlow(arena_alloc, str, .flow_list, self.dupe_behavior), self.dupe_behavior),
+                                            .flow_map => |str| try putMap(map, pair.key, try parseFlow(arena_alloc, str, .flow_map, self.dupe_behavior), self.dupe_behavior),
                                         }
                                     } else if (line.indent == .indent) {
                                         if (expect_shift != .indent or dangling_key == null) return error.UnexpectedValue;
@@ -1013,18 +1015,261 @@ pub const Parser = struct {
         return document;
     }
 
-    fn parseFlowList(alloc: std.mem.Allocator, contents: []const u8, dupe_behavior: DuplicateKeyBehavior) Error!Value {
-        var parser = try FlowParser.initList(alloc, contents);
-        defer parser.deinit();
+    const FlowStackItem = struct {
+        value: *Value,
+        // lists need this. maps do also for keys and values.
+        item_start: usize = 0,
+    };
 
-        return try parser.parse(dupe_behavior);
+    const FlowStack: type = std.ArrayList(FlowStackItem);
+
+    inline fn getStackTip(stack: FlowStack) Error!*FlowStackItem {
+        if (stack.items.len == 0) return error.BadState;
+        return &stack.items[stack.items.len - 1];
     }
 
-    fn parseFlowMap(alloc: std.mem.Allocator, contents: []const u8, dupe_behavior: DuplicateKeyBehavior) Error!Value {
-        var parser = try FlowParser.initMap(alloc, contents);
-        defer parser.deinit();
+    inline fn setStackItemStart(stack: FlowStack, start: usize) Error!void {
+        if (stack.items.len == 0) return error.BadState;
+        stack.items[stack.items.len - 1].item_start = start;
+    }
 
-        return try parser.parse(dupe_behavior);
+    inline fn popStack(stack: *FlowStack) Error!FlowParseState {
+        if (stack.popOrNull() == null)
+            return error.BadState;
+
+        const parent = stack.getLastOrNull() orelse return .done;
+
+        return switch (parent.value.*) {
+            .flow_list => .want_list_separator,
+            .flow_map => .want_map_separator,
+            else => return error.BadState,
+        };
+    }
+
+    const FlowParseState = enum {
+        want_list_item,
+        consuming_list_item,
+        want_list_separator,
+        want_map_key,
+        consuming_map_key,
+        want_map_value,
+        consuming_map_value,
+        want_map_separator,
+        done,
+    };
+
+    pub fn parseFlow(
+        alloc: std.mem.Allocator,
+        contents: []const u8,
+        root_type: Value.TagType,
+        dupe_behavior: DuplicateKeyBehavior,
+    ) Error!Value {
+        // prime the stack:
+
+        var root: Value = switch (root_type) {
+            .flow_list => Value.newFlowList(alloc),
+            .flow_map => Value.newFlowMap(alloc),
+            else => return error.BadState,
+        };
+        var state: FlowParseState = switch (root_type) {
+            .flow_list => .want_list_item,
+            .flow_map => .want_map_key,
+            else => unreachable,
+        };
+        var stack = try FlowStack.initCapacity(alloc, 1);
+        stack.appendAssumeCapacity(.{ .value = &root });
+        var dangling_key: ?[]const u8 = null;
+
+        charloop: for (contents, 0..) |char, idx| {
+            switch (state) {
+                .want_list_item => switch (char) {
+                    ' ', '\t' => continue :charloop,
+                    ',' => {
+                        // empty value
+                        const tip = try getStackTip(stack);
+                        try tip.value.flow_list.append(Value.newScalar(alloc));
+                        tip.item_start = idx + 1;
+                    },
+                    '{' => {
+                        const tip = try getStackTip(stack);
+
+                        const new_map = try Parser.appendListGetValue(
+                            &tip.value.flow_list,
+                            Value.newFlowMap(alloc),
+                        );
+
+                        tip.item_start = idx;
+                        try stack.append(.{ .value = new_map });
+                        state = .want_map_key;
+                    },
+                    '[' => {
+                        const tip = try getStackTip(stack);
+
+                        const new_list = try Parser.appendListGetValue(
+                            &tip.value.flow_list,
+                            Value.newFlowList(alloc),
+                        );
+
+                        tip.item_start = idx;
+                        try stack.append(.{ .value = new_list, .item_start = idx + 1 });
+                        state = .want_list_item;
+                    },
+                    ']' => {
+                        const finished = stack.getLastOrNull() orelse return error.BadState;
+                        if (finished.value.flow_list.items.len > 0 or idx > finished.item_start)
+                            try finished.value.flow_list.append(Value.newScalar(alloc));
+                        state = try popStack(&stack);
+                    },
+                    else => {
+                        try setStackItemStart(stack, idx);
+                        state = .consuming_list_item;
+                    },
+                },
+                .consuming_list_item => switch (char) {
+                    ',' => {
+                        const tip = try getStackTip(stack);
+
+                        try tip.value.flow_list.append(
+                            try Value.fromScalar(alloc, contents[tip.item_start..idx]),
+                        );
+                        tip.item_start = idx + 1;
+
+                        state = .want_list_item;
+                    },
+                    ']' => {
+                        const finished = stack.getLastOrNull() orelse return error.BadState;
+                        try finished.value.flow_list.append(
+                            try Value.fromScalar(alloc, contents[finished.item_start..idx]),
+                        );
+                        state = try popStack(&stack);
+                    },
+                    else => continue :charloop,
+                },
+                .want_list_separator => switch (char) {
+                    ' ', '\t' => continue :charloop,
+                    ',' => {
+                        try setStackItemStart(stack, idx);
+                        state = .want_list_item;
+                    },
+                    ']' => state = try popStack(&stack),
+                    else => return error.BadToken,
+                },
+                .want_map_key => switch (char) {
+                    ' ', '\t' => continue :charloop,
+                    // forbid these characters so that flow dictionary keys cannot start
+                    // with characters that regular dictionary keys cannot start with
+                    // (even though they're unambiguous in this specific context).
+                    '{', '[', '#', '-', '>', '|', ',' => return error.BadToken,
+                    ':' => {
+                        // we have an empty map key
+                        dangling_key = "";
+                        state = .want_map_value;
+                    },
+                    '}' => state = try popStack(&stack),
+                    else => {
+                        try setStackItemStart(stack, idx);
+                        state = .consuming_map_key;
+                    },
+                },
+                .consuming_map_key => switch (char) {
+                    ':' => {
+                        const tip = try getStackTip(stack);
+                        dangling_key = try alloc.dupe(u8, contents[tip.item_start..idx]);
+
+                        state = .want_map_value;
+                    },
+                    else => continue :charloop,
+                },
+                .want_map_value => switch (char) {
+                    ' ', '\t' => continue :charloop,
+                    ',' => {
+                        const tip = try getStackTip(stack);
+                        try Parser.putMap(
+                            &tip.value.flow_map,
+                            dangling_key.?,
+                            Value.newScalar(alloc),
+                            dupe_behavior,
+                        );
+
+                        dangling_key = null;
+                        state = .want_map_key;
+                    },
+                    '[' => {
+                        const tip = try getStackTip(stack);
+
+                        const new_list = try Parser.putMapGetValue(
+                            &tip.value.flow_map,
+                            dangling_key.?,
+                            Value.newFlowList(alloc),
+                            dupe_behavior,
+                        );
+
+                        try stack.append(.{ .value = new_list, .item_start = idx + 1 });
+                        dangling_key = null;
+                        state = .want_list_item;
+                    },
+                    '{' => {
+                        const tip = try getStackTip(stack);
+
+                        const new_map = try Parser.putMapGetValue(
+                            &tip.value.flow_map,
+                            dangling_key.?,
+                            Value.newFlowMap(alloc),
+                            dupe_behavior,
+                        );
+
+                        try stack.append(.{ .value = new_map });
+                        dangling_key = null;
+                        state = .want_map_key;
+                    },
+                    '}' => {
+                        // the value is an empty string and this map is closed
+                        const tip = try getStackTip(stack);
+                        try Parser.putMap(
+                            &tip.value.flow_map,
+                            dangling_key.?,
+                            Value.newScalar(alloc),
+                            dupe_behavior,
+                        );
+
+                        dangling_key = null;
+                        state = try popStack(&stack);
+                    },
+                    else => {
+                        try setStackItemStart(stack, idx);
+                        state = .consuming_map_value;
+                    },
+                },
+                .consuming_map_value => switch (char) {
+                    ',', '}' => |term| {
+                        const tip = try getStackTip(stack);
+                        try Parser.putMap(
+                            &tip.value.flow_map,
+                            dangling_key.?,
+                            try Value.fromScalar(alloc, contents[tip.item_start..idx]),
+                            dupe_behavior,
+                        );
+                        dangling_key = null;
+                        state = .want_map_key;
+                        if (term == '}') state = try popStack(&stack);
+                    },
+                    else => continue :charloop,
+                },
+                .want_map_separator => switch (char) {
+                    ' ', '\t' => continue :charloop,
+                    ',' => state = .want_map_key,
+                    '}' => state = try popStack(&stack),
+                    else => return error.BadToken,
+                },
+                // the root value was closed but there are characters remaining
+                // in the buffer
+                .done => return error.BadState,
+            }
+        }
+        // we ran out of characters while still in the middle of an object
+        if (state != .done) return error.BadState;
+
+        return root;
     }
 
     inline fn appendListGetValue(list: *Value.List, value: Value) Error!*Value {
@@ -1092,299 +1337,5 @@ pub const Parser = struct {
                 }) catch unreachable,
             },
         });
-    }
-};
-
-pub const FlowParser = struct {
-    const FlowStackItem = struct {
-        value: *Value,
-        // lists need this. maps do also for keys and values.
-        item_start: usize = 0,
-    };
-
-    const FlowStack: type = std.ArrayList(FlowStackItem);
-
-    buffer: []const u8,
-    root: Value,
-    alloc: std.mem.Allocator,
-    stack: FlowStack,
-    state: ParseState,
-
-    // make this an ugly state machine parser
-    const ParseState = enum {
-        want_list_item,
-        consuming_list_item,
-        want_list_separator,
-        want_map_key,
-        consuming_map_key,
-        want_map_value,
-        consuming_map_value,
-        want_map_separator,
-        done,
-    };
-
-    const Error = error{
-        BadState,
-        BadToken,
-    } || std.mem.Allocator.Error;
-
-    pub fn initList(alloc: std.mem.Allocator, buffer: []const u8) Error!FlowParser {
-        return .{
-            .buffer = buffer,
-            .root = undefined,
-            .alloc = alloc,
-            .stack = undefined,
-            .state = .want_list_item,
-        };
-    }
-
-    pub fn initMap(alloc: std.mem.Allocator, buffer: []const u8) Error!FlowParser {
-        return .{
-            .buffer = buffer,
-            .root = undefined,
-            .alloc = alloc,
-            .stack = undefined,
-            .state = .want_map_key,
-        };
-    }
-
-    pub fn deinit(self: *FlowParser) void {
-        self.stack.deinit();
-    }
-
-    inline fn getStackTip(stack: FlowStack) Error!*FlowStackItem {
-        if (stack.items.len == 0) return error.BadState;
-        return &stack.items[stack.items.len - 1];
-    }
-
-    inline fn setStackItemStart(stack: FlowStack, start: usize) Error!void {
-        if (stack.items.len == 0) return error.BadState;
-        stack.items[stack.items.len - 1].item_start = start;
-    }
-
-    inline fn popStack(self: *FlowParser) Parser.Error!ParseState {
-        if (self.stack.popOrNull() == null)
-            return error.BadState;
-
-        const parent = self.stack.getLastOrNull() orelse return .done;
-
-        return switch (parent.value.*) {
-            .flow_list => .want_list_separator,
-            .flow_map => .want_map_separator,
-            else => return error.BadState,
-        };
-    }
-
-    pub fn parse(self: *FlowParser, dupe_behavior: Parser.DuplicateKeyBehavior) Parser.Error!Value {
-        // prime the stack:
-        switch (self.state) {
-            .want_list_item => {
-                self.root = Value.newFlowList(self.alloc);
-                self.stack = try FlowStack.initCapacity(self.alloc, 1);
-                self.stack.appendAssumeCapacity(.{ .value = &self.root });
-            },
-            .want_map_key => {
-                self.root = Value.newFlowMap(self.alloc);
-                self.stack = try FlowStack.initCapacity(self.alloc, 1);
-                self.stack.appendAssumeCapacity(.{ .value = &self.root });
-            },
-            else => {
-                return error.BadState;
-            },
-        }
-
-        var dangling_key: ?[]const u8 = null;
-
-        charloop: for (self.buffer, 0..) |char, idx| {
-            // std.debug.print("{s} => {c}\n", .{ @tagName(self.state), char });
-            switch (self.state) {
-                .want_list_item => switch (char) {
-                    ' ', '\t' => continue :charloop,
-                    ',' => {
-                        // empty value
-                        const tip = try getStackTip(self.stack);
-                        try tip.value.flow_list.append(Value.newScalar(self.alloc));
-                        tip.item_start = idx + 1;
-                    },
-                    '{' => {
-                        const tip = try getStackTip(self.stack);
-
-                        const new_map = try Parser.appendListGetValue(
-                            &tip.value.flow_list,
-                            Value.newFlowMap(self.alloc),
-                        );
-
-                        tip.item_start = idx;
-                        try self.stack.append(.{ .value = new_map });
-                        self.state = .want_map_key;
-                    },
-                    '[' => {
-                        const tip = try getStackTip(self.stack);
-
-                        const new_list = try Parser.appendListGetValue(
-                            &tip.value.flow_list,
-                            Value.newFlowList(self.alloc),
-                        );
-
-                        tip.item_start = idx;
-                        try self.stack.append(.{ .value = new_list, .item_start = idx + 1 });
-                        self.state = .want_list_item;
-                    },
-                    ']' => {
-                        const finished = self.stack.getLastOrNull() orelse return error.BadState;
-                        if (finished.value.flow_list.items.len > 0 or idx > finished.item_start)
-                            try finished.value.flow_list.append(Value.newScalar(self.alloc));
-                        self.state = try self.popStack();
-                    },
-                    else => {
-                        try setStackItemStart(self.stack, idx);
-                        self.state = .consuming_list_item;
-                    },
-                },
-                .consuming_list_item => switch (char) {
-                    ',' => {
-                        const tip = try getStackTip(self.stack);
-
-                        try tip.value.flow_list.append(
-                            try Value.fromScalar(self.alloc, self.buffer[tip.item_start..idx]),
-                        );
-                        tip.item_start = idx + 1;
-
-                        self.state = .want_list_item;
-                    },
-                    ']' => {
-                        const finished = self.stack.getLastOrNull() orelse return error.BadState;
-                        try finished.value.flow_list.append(
-                            try Value.fromScalar(self.alloc, self.buffer[finished.item_start..idx]),
-                        );
-                        self.state = try self.popStack();
-                    },
-                    else => continue :charloop,
-                },
-                .want_list_separator => switch (char) {
-                    ' ', '\t' => continue :charloop,
-                    ',' => {
-                        try setStackItemStart(self.stack, idx);
-                        self.state = .want_list_item;
-                    },
-                    ']' => self.state = try self.popStack(),
-                    else => return error.BadToken,
-                },
-                .want_map_key => switch (char) {
-                    ' ', '\t' => continue :charloop,
-                    // forbid these characters so that flow dictionary keys cannot start
-                    // with characters that regular dictionary keys cannot start with
-                    // (even though they're unambiguous in this specific context).
-                    '{', '[', '#', '-', '>', '|', ',' => return error.BadToken,
-                    ':' => {
-                        // we have an empty map key
-                        dangling_key = "";
-                        self.state = .want_map_value;
-                    },
-                    '}' => self.state = try self.popStack(),
-                    else => {
-                        try setStackItemStart(self.stack, idx);
-                        self.state = .consuming_map_key;
-                    },
-                },
-                .consuming_map_key => switch (char) {
-                    ':' => {
-                        const tip = try getStackTip(self.stack);
-                        dangling_key = try self.alloc.dupe(u8, self.buffer[tip.item_start..idx]);
-
-                        self.state = .want_map_value;
-                    },
-                    else => continue :charloop,
-                },
-                .want_map_value => switch (char) {
-                    ' ', '\t' => continue :charloop,
-                    ',' => {
-                        const tip = try getStackTip(self.stack);
-                        try Parser.putMap(
-                            &tip.value.flow_map,
-                            dangling_key.?,
-                            Value.newScalar(self.alloc),
-                            dupe_behavior,
-                        );
-
-                        dangling_key = null;
-                        self.state = .want_map_key;
-                    },
-                    '[' => {
-                        const tip = try getStackTip(self.stack);
-
-                        const new_list = try Parser.putMapGetValue(
-                            &tip.value.flow_map,
-                            dangling_key.?,
-                            Value.newFlowList(self.alloc),
-                            dupe_behavior,
-                        );
-
-                        try self.stack.append(.{ .value = new_list, .item_start = idx + 1 });
-                        dangling_key = null;
-                        self.state = .want_list_item;
-                    },
-                    '{' => {
-                        const tip = try getStackTip(self.stack);
-
-                        const new_map = try Parser.putMapGetValue(
-                            &tip.value.flow_map,
-                            dangling_key.?,
-                            Value.newFlowMap(self.alloc),
-                            dupe_behavior,
-                        );
-
-                        try self.stack.append(.{ .value = new_map });
-                        dangling_key = null;
-                        self.state = .want_map_key;
-                    },
-                    '}' => {
-                        // the value is an empty string and this map is closed
-                        const tip = try getStackTip(self.stack);
-                        try Parser.putMap(
-                            &tip.value.flow_map,
-                            dangling_key.?,
-                            Value.newScalar(self.alloc),
-                            dupe_behavior,
-                        );
-
-                        dangling_key = null;
-                        self.state = try self.popStack();
-                    },
-                    else => {
-                        try setStackItemStart(self.stack, idx);
-                        self.state = .consuming_map_value;
-                    },
-                },
-                .consuming_map_value => switch (char) {
-                    ',', '}' => |term| {
-                        const tip = try getStackTip(self.stack);
-                        try Parser.putMap(
-                            &tip.value.flow_map,
-                            dangling_key.?,
-                            try Value.fromScalar(self.alloc, self.buffer[tip.item_start..idx]),
-                            dupe_behavior,
-                        );
-                        dangling_key = null;
-                        self.state = .want_map_key;
-                        if (term == '}') self.state = try self.popStack();
-                    },
-                    else => continue :charloop,
-                },
-                .want_map_separator => switch (char) {
-                    ' ', '\t' => continue :charloop,
-                    ',' => self.state = .want_map_key,
-                    '}' => self.state = try self.popStack(),
-                    else => return error.BadToken,
-                },
-                // the root value was closed but there are characters remaining
-                // in the buffer
-                .done => return error.BadState,
-            }
-        }
-        // we ran out of characters while still in the middle of an object
-        if (self.state != .done) return error.BadState;
-
-        return self.root;
     }
 };
