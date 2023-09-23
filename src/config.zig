@@ -757,7 +757,7 @@ pub const Parser = struct {
                     .value => switch (stack.getLast().*) {
                         // these three states are never reachable here. flow_list and
                         // flow_map are parsed with a separate state machine. These
-                        // value tyeps can only be present by themselves as the first
+                        // value types can only be present by themselves as the first
                         // line of the document, in which case the document consists
                         // only of that single line: this parser jumps immediately into
                         // the .done state, bypassing the .value state in which this
@@ -799,7 +799,7 @@ pub const Parser = struct {
                             //
                             // the first line here creates the expect_shift, but the second line
                             // is a valid continuation of the list despite not being indented
-                            if (expect_shift == .indent and line.indent != .indent)
+                            if (!flop and (expect_shift == .indent and line.indent != .indent))
                                 try list.append(Value.newScalar(arena_alloc));
 
                             // Consider:
@@ -838,47 +838,33 @@ pub const Parser = struct {
                                         .line_string, .space_string => |str| {
                                             // string pushes the stack
                                             const new_string = try appendListGetValue(list, try Value.fromString(arena_alloc, str));
+                                            try stack.append(new_string);
 
                                             try new_string.string.append(in_line.lineEnding());
-
-                                            try stack.append(new_string);
                                             expect_shift = .none;
                                         },
                                     }
                                 },
                                 .list_item => |value| {
-                                    switch (line.indent) {
-                                        // for dedent, the stack has already been popped, so this should be fine
-                                        .none, .dedent => {
-                                            expect_shift = .none;
-                                            switch (value) {
-                                                .empty => expect_shift = .indent,
-                                                .scalar => |str| try list.append(try Value.fromScalar(arena_alloc, str)),
-                                                .line_string, .space_string => |str| try list.append(try Value.fromString(arena_alloc, str)),
-                                                .flow_list => |str| try list.append(try parseFlowList(arena_alloc, str, self.dupe_behavior)),
-                                                .flow_map => |str| try list.append(try parseFlowMap(arena_alloc, str, self.dupe_behavior)),
-                                            }
-                                        },
-                                        // a new list is being created
-                                        .indent => {
-                                            if (expect_shift != .indent)
-                                                return error.UnexpectedIndent;
+                                    if (flop or (line.indent == .none or line.indent == .dedent)) {
+                                        expect_shift = .none;
+                                        switch (value) {
+                                            .empty => expect_shift = .indent,
+                                            .scalar => |str| try list.append(try Value.fromScalar(arena_alloc, str)),
+                                            .line_string, .space_string => |str| try list.append(try Value.fromString(arena_alloc, str)),
+                                            .flow_list => |str| try list.append(try parseFlowList(arena_alloc, str, self.dupe_behavior)),
+                                            .flow_map => |str| try list.append(try parseFlowMap(arena_alloc, str, self.dupe_behavior)),
+                                        }
+                                    } else if (line.indent == .indent) {
+                                        if (expect_shift != .indent) return error.UnexpectedIndent;
 
-                                            const new_list = try appendListGetValue(list, Value.newList(arena_alloc));
-                                            try stack.append(new_list);
-
-                                            expect_shift = .none;
-                                            switch (value) {
-                                                .empty => expect_shift = .indent,
-                                                .scalar => |str| try new_list.list.append(try Value.fromScalar(arena_alloc, str)),
-                                                .line_string, .space_string => |str| try new_list.list.append(try Value.fromString(arena_alloc, str)),
-                                                .flow_list => |str| try new_list.list.append(try parseFlowList(arena_alloc, str, self.dupe_behavior)),
-                                                .flow_map => |str| try new_list.list.append(try parseFlowMap(arena_alloc, str, self.dupe_behavior)),
-                                            }
-                                        },
-                                    }
+                                        const new_list = try appendListGetValue(list, Value.newList(arena_alloc));
+                                        try stack.append(new_list);
+                                        expect_shift = .none;
+                                        continue :flipflop;
+                                    } else unreachable;
                                 },
-                                .map_item => |pair| {
+                                .map_item => {
                                     // this prong cannot be hit on dedent in a valid way.
                                     //
                                     //    -
@@ -894,17 +880,7 @@ pub const Parser = struct {
                                     const new_map = try appendListGetValue(list, Value.newMap(arena_alloc));
                                     try stack.append(new_map);
                                     expect_shift = .none;
-
-                                    switch (pair.val) {
-                                        .empty => {
-                                            dangling_key = try arena_alloc.dupe(u8, pair.key);
-                                            expect_shift = .indent;
-                                        },
-                                        .scalar => |str| try new_map.map.put(pair.key, try Value.fromScalar(arena_alloc, str)),
-                                        .line_string, .space_string => |str| try new_map.map.put(pair.key, try Value.fromString(arena_alloc, str)),
-                                        .flow_list => |str| try new_map.map.put(pair.key, try parseFlowList(arena_alloc, str, self.dupe_behavior)),
-                                        .flow_map => |str| try new_map.map.put(pair.key, try parseFlowMap(arena_alloc, str, self.dupe_behavior)),
-                                    }
+                                    continue :flipflop;
                                 },
                             }
                         },
@@ -916,7 +892,7 @@ pub const Parser = struct {
                             //
                             // the first line here creates the expect_shift, but the second line
                             // is a valid continuation of the map despite not being indented
-                            if (expect_shift == .indent and line.indent != .indent) {
+                            if (!flop and (expect_shift == .indent and line.indent != .indent)) {
                                 try putMap(
                                     map,
                                     dangling_key orelse return error.Fail,
@@ -963,7 +939,7 @@ pub const Parser = struct {
 
                                     dangling_key = null;
                                 },
-                                .list_item => |value| {
+                                .list_item => {
                                     // this prong cannot be hit on dedent in a valid way.
                                     //
                                     //    map:
@@ -978,21 +954,13 @@ pub const Parser = struct {
                                     const new_list = try putMapGetValue(map, dangling_key.?, Value.newList(arena_alloc), self.dupe_behavior);
                                     try stack.append(new_list);
                                     dangling_key = null;
-
                                     expect_shift = .none;
-                                    switch (value) {
-                                        .empty => expect_shift = .indent,
-                                        .scalar => |str| try new_list.list.append(try Value.fromScalar(arena_alloc, str)),
-                                        .line_string, .space_string => |str| try new_list.list.append(try Value.fromString(arena_alloc, str)),
-                                        .flow_list => |str| try new_list.list.append(try parseFlowList(arena_alloc, str, self.dupe_behavior)),
-                                        .flow_map => |str| try new_list.list.append(try parseFlowMap(arena_alloc, str, self.dupe_behavior)),
-                                    }
+                                    continue :flipflop;
                                 },
                                 .map_item => |pair| {
-                                    expect_shift = .none;
-                                    switch (line.indent) {
-                                        // for dedent, the stack has already been popped, so this should be fine
-                                        .none, .dedent => switch (pair.val) {
+                                    if (flop or (line.indent == .none or line.indent == .dedent)) {
+                                        expect_shift = .none;
+                                        switch (pair.val) {
                                             .empty => {
                                                 expect_shift = .indent;
                                                 dangling_key = try arena_alloc.dupe(u8, pair.key);
@@ -1001,27 +969,15 @@ pub const Parser = struct {
                                             .line_string, .space_string => |str| try putMap(map, pair.key, try Value.fromString(arena_alloc, str), self.dupe_behavior),
                                             .flow_list => |str| try putMap(map, pair.key, try parseFlowList(arena_alloc, str, self.dupe_behavior), self.dupe_behavior),
                                             .flow_map => |str| try putMap(map, pair.key, try parseFlowMap(arena_alloc, str, self.dupe_behavior), self.dupe_behavior),
-                                        },
-                                        // a new map is being created
-                                        .indent => {
-                                            if (expect_shift != .indent or dangling_key == null) return error.UnexpectedValue;
+                                        }
+                                    } else if (line.indent == .indent) {
+                                        if (expect_shift != .indent or dangling_key == null) return error.UnexpectedValue;
 
-                                            const new_map = try putMapGetValue(map, dangling_key.?, Value.newMap(arena_alloc), self.dupe_behavior);
-                                            try stack.append(new_map);
-                                            dangling_key = null;
-
-                                            switch (pair.val) {
-                                                .empty => {
-                                                    expect_shift = .indent;
-                                                    dangling_key = try arena_alloc.dupe(u8, pair.key);
-                                                },
-                                                .scalar => |str| try new_map.map.put(pair.key, try Value.fromScalar(arena_alloc, str)),
-                                                .line_string, .space_string => |str| try new_map.map.put(pair.key, try Value.fromString(arena_alloc, str)),
-                                                .flow_list => |str| try new_map.map.put(pair.key, try parseFlowList(arena_alloc, str, self.dupe_behavior)),
-                                                .flow_map => |str| try new_map.map.put(pair.key, try parseFlowMap(arena_alloc, str, self.dupe_behavior)),
-                                            }
-                                        },
-                                    }
+                                        const new_map = try putMapGetValue(map, dangling_key.?, Value.newMap(arena_alloc), self.dupe_behavior);
+                                        try stack.append(new_map);
+                                        dangling_key = null;
+                                        continue :flipflop;
+                                    } else unreachable;
                                 },
                             }
                         },
@@ -1319,7 +1275,7 @@ pub const FlowParser = struct {
                     // forbid these characters so that flow dictionary keys cannot start
                     // with characters that regular dictionary keys cannot start with
                     // (even though they're unambiguous in this specific context).
-                    '{', '[', '#', '>', '|', ',' => return error.BadToken,
+                    '{', '[', '#', '-', '>', '|', ',' => return error.BadToken,
                     ':' => {
                         // we have an empty map key
                         dangling_key = "";
