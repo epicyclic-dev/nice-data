@@ -2,9 +2,9 @@ const std = @import("std");
 
 const buffers = @import("./linebuffer.zig");
 const tokenizer = @import("./tokenizer.zig");
-const Value = @import("./parser/value.zig").Value;
 const State = @import("./parser/state.zig").State;
-const Document = @import("./parser/state.zig").Document;
+pub const Document = @import("./parser/state.zig").Document;
+pub const Value = @import("./parser/value.zig").Value;
 
 pub const Diagnostics = struct {
     row: usize,
@@ -65,5 +65,41 @@ pub const Parser = struct {
         while (try tok.next()) |line| try state.parseLine(line, self.options.duplicate_key_behavior);
 
         return try state.finish(self.options);
+    }
+};
+
+pub const StreamParser = struct {
+    linetok: tokenizer.LineTokenizer(buffers.LineBuffer),
+    state: State,
+    options: Options = .{},
+    diagnostics: Diagnostics = .{
+        .row = 0,
+        .span = .{ .absolute = 0, .line_offset = 0, .length = 0 },
+        .message = "all is well",
+    },
+
+    pub fn init(allocator: std.mem.Allocator, options: Options) !StreamParser {
+        return .{
+            .linetok = .{
+                .buffer = try buffers.LineBuffer.init(allocator),
+                .diagnostics = &@as(*StreamParser, @ptrFromInt(@returnAddress())).diagnostics,
+            },
+            .state = State.init(allocator),
+            .options = options,
+        };
+    }
+
+    pub fn deinit(self: StreamParser) void {
+        self.linetok.buffer.deinit();
+        self.state.deinit();
+    }
+
+    pub fn feed(self: *StreamParser, data: []const u8) Error!void {
+        try self.linetok.buffer.feed(data);
+        while (try self.linetok.next()) |line| try self.state.parseLine(line, self.options.duplicate_key_behavior);
+    }
+
+    pub fn finish(self: *StreamParser) Error!Document {
+        return try self.state.finish(self.options);
     }
 };
