@@ -1,0 +1,53 @@
+# this is a comment
+key: {my: flow, is: [totally, unstoppable  , [], [ ], [{don't: you know}], { }, {:,a:}]}
+bar:
+key2:
+  - electric
+  - boogaloo
+# comment
+# commentary
+keyzo: > fake string
+beezo:
+  > this string
+  # with a comment
+  | goes on
+  # and another comment
+  > and on
+  > forever
+qux2: {my: flow, is: unstoppable}
+qux3: [my, flow, is, unstoppable]
+qux4: > {my: flow, is: unstoppable}
+qux5: | {my: flow, is: unstoppable}
+quux:
+  [one, two, three]
+foo:
+  -
+  -
+    >
+    | start with newline
+  -
+    |
+    > start with space
+  -
+    > end with newline
+    |
+  -
+    | end with space
+    >
+  -
+    bar:
+      -
+        > this string
+        # comment
+        | goes on
+        | and on
+        > forever
+        | testing   |
+        > tasting   |
+        > over
+        |
+baz: 1
+
+# here is a treatise on why this is a comment that follows everything else and has
+# nothing following it: it seemed like a good idea at the time, so I went ahead and
+# wrote it out and, well, here we are.
