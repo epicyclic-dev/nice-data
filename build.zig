@@ -4,7 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
 
     const nice = b.addModule("nice", .{
-        .source_file = .{ .path = "src/config.zig" },
+        .source_file = .{ .path = "src/nice.zig" },
     });
 
     add_examples(b, .{
