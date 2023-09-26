@@ -7,9 +7,9 @@ pub const Document = @import("./parser/state.zig").Document;
 pub const Value = @import("./parser/value.zig").Value;
 
 pub const Diagnostics = struct {
-    row: usize,
-    span: struct { absolute: usize, line_offset: usize, length: usize },
-    message: []const u8,
+    row: usize = 0,
+    span: struct { absolute: usize = 0, line_offset: usize = 0, length: usize = 0 } = .{},
+    message: []const u8 = "no problems",
 };
 
 pub const Error = error{
@@ -42,64 +42,54 @@ pub const Options = struct {
     default_object: enum { string, list, map, fail } = .fail,
 };
 
-pub const Parser = struct {
-    allocator: std.mem.Allocator,
-    options: Options = .{},
-    diagnostics: Diagnostics = .{
-        .row = 0,
-        .span = .{ .absolute = 0, .line_offset = 0, .length = 0 },
-        .message = "all is well",
-    },
+pub fn parseBuffer(allocator: std.mem.Allocator, buffer: []const u8, options: Options) !Document {
+    var state = State.init(allocator);
+    defer state.deinit();
+    errdefer state.document.deinit();
 
-    pub fn parseBuffer(self: *Parser, buffer: []const u8) Error!Document {
-        var tok: tokenizer.LineTokenizer(buffers.FixedLineBuffer) = .{
-            .buffer = buffers.FixedLineBuffer.init(buffer),
-            .diagnostics = &self.diagnostics,
-        };
+    var diagnostics = Diagnostics{};
+    var tok: tokenizer.LineTokenizer(buffers.ValidatingFixedLineBuffer) = .{
+        .buffer = buffers.ValidatingFixedLineBuffer.init(buffer),
+        .diagnostics = &diagnostics,
+    };
 
-        var state = State.init(self.allocator);
-        defer state.deinit();
-        errdefer state.document.deinit();
-
-        // TODO: pass the diagnostics pointer as well
-        while (try tok.next()) |line| try state.parseLine(line, self.options.duplicate_key_behavior);
-
-        return try state.finish(self.options);
-    }
-};
+    while (try tok.next()) |line| try state.parseLine(line, options.duplicate_key_behavior);
+    return try state.finish(options);
+}
 
 pub const StreamParser = struct {
-    linetok: tokenizer.LineTokenizer(buffers.LineBuffer),
-    state: State,
-    options: Options = .{},
-    diagnostics: Diagnostics = .{
-        .row = 0,
-        .span = .{ .absolute = 0, .line_offset = 0, .length = 0 },
-        .message = "all is well",
-    },
+    linetok: tokenizer.LineTokenizer(buffers.ValidatingLineBuffer),
+    parse_state: State,
+    parse_options: Options = .{},
+    diagnostics: Diagnostics = .{},
 
     pub fn init(allocator: std.mem.Allocator, options: Options) !StreamParser {
+        const diagnostics = try allocator.create(Diagnostics);
+        errdefer allocator.destroy(diagnostics);
+        diagnostics.* = Diagnostics{};
+
         return .{
             .linetok = .{
-                .buffer = try buffers.LineBuffer.init(allocator),
-                .diagnostics = &@as(*StreamParser, @ptrFromInt(@returnAddress())).diagnostics,
+                .buffer = try buffers.ValidatingLineBuffer.init(allocator),
+                .diagnostics = diagnostics,
             },
-            .state = State.init(allocator),
-            .options = options,
+            .parse_state = State.init(allocator),
+            .parse_options = options,
         };
     }
 
     pub fn deinit(self: StreamParser) void {
+        self.linetok.buffer.allocator.destroy(self.linetok.diagnostics);
         self.linetok.buffer.deinit();
-        self.state.deinit();
+        self.parse_state.deinit();
     }
 
-    pub fn feed(self: *StreamParser, data: []const u8) Error!void {
+    pub fn feed(self: *StreamParser, data: []const u8) !void {
         try self.linetok.buffer.feed(data);
-        while (try self.linetok.next()) |line| try self.state.parseLine(line, self.options.duplicate_key_behavior);
+        while (try self.linetok.next()) |line| try self.parse_state.parseLine(line, self.parse_options.duplicate_key_behavior);
     }
 
-    pub fn finish(self: *StreamParser) Error!Document {
-        return try self.state.finish(self.options);
+    pub fn finish(self: *StreamParser) !Document {
+        return try self.parse_state.finish(self.parse_options);
     }
 };

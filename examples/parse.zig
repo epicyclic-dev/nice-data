@@ -15,9 +15,7 @@ pub fn main() !void {
     var needfree = true;
     defer if (needfree) allocator.free(data);
 
-    var parser = nice.Parser{ .allocator = allocator };
-
-    const document = try parser.parseBuffer(data);
+    const document = try nice.parseBuffer(allocator, data, .{});
     defer document.deinit();
 
     // free data memory to ensure that the parsed document is not holding
