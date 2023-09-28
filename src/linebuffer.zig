@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const Diagnostics = @import("./parser.zig").Diagnostics;
+
 pub const IndexSlice = struct { start: usize, len: usize };
 
 pub const Error = error{
@@ -45,19 +47,24 @@ pub fn LineBuffer(comptime options: Strictness) type {
 
         pub const default_capacity: usize = 4096;
 
-        pub fn init(allocator: std.mem.Allocator) !@This() {
-            return initCapacity(allocator, default_capacity);
+        pub fn init(allocator: std.mem.Allocator, diagnostics: *Diagnostics) !@This() {
+            return initCapacity(allocator, diagnostics, default_capacity);
         }
 
-        pub fn initCapacity(allocator: std.mem.Allocator, capacity: usize) !@This() {
+        pub fn initCapacity(allocator: std.mem.Allocator, diagnostics: *Diagnostics, capacity: usize) !@This() {
             return .{
                 .allocator = allocator,
                 .internal = .{
+                    .diagnostics = diagnostics,
                     .buffer = try allocator.alloc(u8, capacity),
                     .window = .{ .start = 0, .len = 0 },
                 },
                 .used = 0,
             };
+        }
+
+        pub fn diag(self: @This()) *Diagnostics {
+            return self.internal.diagnostics;
         }
 
         pub fn empty(self: @This()) bool {
@@ -111,9 +118,18 @@ pub fn FixedLineBuffer(comptime options: Strictness) type {
     return struct {
         buffer: []const u8,
         window: IndexSlice,
+        diagnostics: *Diagnostics,
 
-        pub fn init(data: []const u8) @This() {
-            return .{ .buffer = data, .window = .{ .start = 0, .len = data.len } };
+        pub fn init(data: []const u8, diagnostics: *Diagnostics) @This() {
+            return .{
+                .buffer = data,
+                .window = .{ .start = 0, .len = data.len },
+                .diagnostics = diagnostics,
+            };
+        }
+
+        pub fn diag(self: @This()) *Diagnostics {
+            return self.diagnostics;
         }
 
         pub fn empty(self: @This()) bool {
@@ -131,16 +147,33 @@ pub fn FixedLineBuffer(comptime options: Strictness) type {
             const split: usize = split: {
                 for (window, 0..) |char, idx| {
                     if (comptime options.check_carriage_return)
-                        if (char == '\r') return error.IllegalCarriageReturn;
+                        if (char == '\r') {
+                            self.diagnostics.row += 1;
+                            self.diagnostics.line_offset = idx;
+                            self.diagnostics.length = 1;
+                            self.diagnostics.message = "found a carriage return";
+                            return error.IllegalCarriageReturn;
+                        };
 
                     if (comptime options.check_nonprinting_ascii)
-                        if ((char != '\n' and char != '\t') and (char < ' ' or char == 0x7F))
+                        if ((char != '\n' and char != '\t') and (char < ' ' or char == 0x7F)) {
+                            self.diagnostics.row += 1;
+                            self.diagnostics.line_offset = idx;
+                            self.diagnostics.length = 1;
+                            self.diagnostics.message = "found nonprinting ascii characters";
                             return error.IllegalNonprintingAscii;
+                        };
 
                     if (comptime options.check_trailing_whitespace) {
                         if (char == '\n') {
-                            if (idx > 0 and (window[idx - 1] == ' ' or window[idx - 1] == '\t'))
+                            if (idx > 0 and (window[idx - 1] == ' ' or window[idx - 1] == '\t')) {
+                                self.diagnostics.row += 1;
+                                self.diagnostics.line_offset = idx;
+                                self.diagnostics.length = 1;
+                                self.diagnostics.message = "found trailing spaces";
                                 return error.IllegalTrailingSpace;
+                            }
+
                             break :split idx;
                         }
                     } else {
@@ -150,12 +183,41 @@ pub fn FixedLineBuffer(comptime options: Strictness) type {
                 return null;
             };
 
+            self.diagnostics.row += 1;
+            self.diagnostics.line_offset = 0;
+
             self.window.start += split + 1;
             self.window.len -= split + 1;
 
             if (comptime options.validate_utf8) {
                 const line = window[0..split];
-                return if (std.unicode.utf8ValidateSlice(line)) line else error.InputIsNotValidUtf8;
+
+                var idx: usize = 0;
+                while (idx < line.len) {
+                    if (std.unicode.utf8ByteSequenceLength(line[idx])) |cp_len| {
+                        if (idx + cp_len > line.len) {
+                            self.diagnostics.line_offset = idx;
+                            self.diagnostics.length = cp_len;
+                            self.diagnostics.message = "truncated UTF-8 sequence";
+                            return error.InputIsNotValidUtf8;
+                        }
+
+                        if (std.meta.isError(std.unicode.utf8Decode(line[idx .. idx + cp_len]))) {
+                            self.diagnostics.line_offset = idx;
+                            self.diagnostics.length = cp_len;
+                            self.diagnostics.message = "invalid UTF-8 sequence";
+                            return error.InputIsNotValidUtf8;
+                        }
+                        idx += cp_len;
+                    } else |_| {
+                        self.diagnostics.line_offset = idx;
+                        self.diagnostics.length = 1;
+                        self.diagnostics.message = "invalid UTF-8 sequence start byte";
+                        return error.InputIsNotValidUtf8;
+                    }
+                }
+
+                return line;
             } else {
                 return window[0..split];
             }

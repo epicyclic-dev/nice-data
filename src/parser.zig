@@ -8,14 +8,14 @@ pub const Value = @import("./parser/value.zig").Value;
 
 pub const Diagnostics = struct {
     row: usize = 0,
-    span: struct { absolute: usize = 0, line_offset: usize = 0, length: usize = 0 } = .{},
+    line_offset: usize = 0,
+    length: usize = 0,
     message: []const u8 = "no problems",
 };
 
 pub const Error = error{
     UnexpectedIndent,
     UnexpectedValue,
-    ExtraContent,
     EmptyDocument,
     DuplicateKey,
     BadMapEntry,
@@ -42,15 +42,13 @@ pub const Options = struct {
     default_object: enum { string, list, map, fail } = .fail,
 };
 
-pub fn parseBuffer(allocator: std.mem.Allocator, buffer: []const u8, options: Options) !Document {
-    var state = State.init(allocator);
+pub fn parseBuffer(allocator: std.mem.Allocator, buffer: []const u8, diagnostics: *Diagnostics, options: Options) !Document {
+    var state = State.init(allocator, diagnostics);
     defer state.deinit();
     errdefer state.document.deinit();
 
-    var diagnostics = Diagnostics{};
     var tok: tokenizer.LineTokenizer(buffers.ValidatingFixedLineBuffer) = .{
-        .buffer = buffers.ValidatingFixedLineBuffer.init(buffer),
-        .diagnostics = &diagnostics,
+        .buffer = buffers.ValidatingFixedLineBuffer.init(buffer, diagnostics),
     };
 
     while (try tok.next()) |line| try state.parseLine(line, options.duplicate_key_behavior);
@@ -65,7 +63,6 @@ pub const StreamParser = struct {
     linetok: tokenizer.LineTokenizer(buffers.ValidatingLineBuffer),
     parse_state: State,
     parse_options: Options = .{},
-    diagnostics: Diagnostics = .{},
 
     pub fn init(allocator: std.mem.Allocator, options: Options) !StreamParser {
         const diagnostics = try allocator.create(Diagnostics);
@@ -74,16 +71,15 @@ pub const StreamParser = struct {
 
         return .{
             .linetok = .{
-                .buffer = try buffers.ValidatingLineBuffer.init(allocator),
-                .diagnostics = diagnostics,
+                .buffer = try buffers.ValidatingLineBuffer.init(allocator, diagnostics),
             },
-            .parse_state = State.init(allocator),
+            .parse_state = State.init(allocator, diagnostics),
             .parse_options = options,
         };
     }
 
     pub fn deinit(self: StreamParser) void {
-        self.linetok.buffer.allocator.destroy(self.linetok.diagnostics);
+        self.linetok.buffer.allocator.destroy(self.parse_state.diagnostics);
         self.linetok.buffer.deinit();
         self.parse_state.deinit();
     }

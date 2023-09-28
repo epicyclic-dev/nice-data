@@ -16,6 +16,7 @@ pub fn main() !void {
         defer file.close();
         var parser = try nice.StreamParser.init(allocator, .{});
         defer parser.deinit();
+        errdefer parser.parse_state.document.deinit();
         while (true) {
             var buf = [_]u8{0} ** 1024;
             const len = try file.read(&buf);

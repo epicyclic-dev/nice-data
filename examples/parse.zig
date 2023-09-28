@@ -15,7 +15,16 @@ pub fn main() !void {
     var needfree = true;
     defer if (needfree) allocator.free(data);
 
-    const document = try nice.parseBuffer(allocator, data, .{});
+    var diagnostics = nice.Diagnostics{};
+    const document = nice.parseBuffer(allocator, data, &diagnostics, .{}) catch |err| {
+        std.debug.print("{s}:{d} col:{d}: {s}\n", .{
+            args[1],
+            diagnostics.row,
+            diagnostics.line_offset,
+            diagnostics.message,
+        });
+        return err;
+    };
     defer document.deinit();
 
     // free data memory to ensure that the parsed document is not holding

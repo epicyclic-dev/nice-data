@@ -4,10 +4,10 @@ const Diagnostics = @import("./parser.zig").Diagnostics;
 
 pub const Error = error{
     BadToken,
+    ExtraContent,
     MixedIndentation,
-    UnquantizedIndentation,
     TooMuchIndentation,
-    MissingNewline,
+    UnquantizedIndentation,
     TrailingWhitespace,
     Impossible,
 };
@@ -60,18 +60,19 @@ pub const Line = struct {
 };
 
 // buffer is expected to be either LineBuffer or FixedLineBuffer, but can
-// technically be anything with a `nextLine` method
+// technically be anything with a conformant interface.
 pub fn LineTokenizer(comptime Buffer: type) type {
     return struct {
         buffer: Buffer,
         index: usize = 0,
         indentation: DetectedIndentation = .unknown,
         last_indent: usize = 0,
-        diagnostics: *Diagnostics,
-        row: usize = 0,
 
         pub fn finish(self: @This()) !void {
             if (!self.buffer.empty()) {
+                self.buffer.diag().line_offset = 0;
+                self.buffer.diag().length = 1;
+                self.buffer.diag().message = "the document has extra content or is missing the final LF character";
                 return error.ExtraContent;
             }
         }
@@ -91,13 +92,23 @@ pub fn LineTokenizer(comptime Buffer: type) type {
                                 // ugly documents.
                                 .unknown => self.indentation = .{ .spaces = 0 },
                                 .spaces => {},
-                                .tabs => return error.MixedIndentation,
+                                .tabs => {
+                                    self.buffer.diag().line_offset = idx;
+                                    self.buffer.diag().length = 1;
+                                    self.buffer.diag().message = "the document contains mixed tab/space indentation";
+                                    return error.MixedIndentation;
+                                },
                             }
                         },
                         '\t' => {
                             switch (self.indentation) {
                                 .unknown => self.indentation = .tabs,
-                                .spaces => return error.MixedIndentation,
+                                .spaces => {
+                                    self.buffer.diag().line_offset = idx;
+                                    self.buffer.diag().length = 1;
+                                    self.buffer.diag().message = "the document contains mixed tab/space indentation";
+                                    return error.MixedIndentation;
+                                },
                                 .tabs => {},
                             }
                         },
@@ -110,7 +121,12 @@ pub fn LineTokenizer(comptime Buffer: type) type {
                         },
                     }
                 } else {
-                    if (raw_line.len > 0) return error.TrailingWhitespace;
+                    if (raw_line.len > 0) {
+                        self.buffer.diag().line_offset = raw_line.len - 1;
+                        self.buffer.diag().length = 1;
+                        self.buffer.diag().message = "this line contains trailing whitespace";
+                        return error.TrailingWhitespace;
+                    }
                     continue :lineloop;
                 }
 
@@ -118,15 +134,23 @@ pub fn LineTokenizer(comptime Buffer: type) type {
                     if (self.indentation.spaces == 0) {
                         self.indentation.spaces = indent;
                     }
-                    if (@rem(indent, self.indentation.spaces) != 0)
+                    if (@rem(indent, self.indentation.spaces) != 0) {
+                        self.buffer.diag().line_offset = 0;
+                        self.buffer.diag().length = indent;
+                        self.buffer.diag().message = "this line contains incorrectly quantized indentation";
                         return error.UnquantizedIndentation;
+                    }
 
                     break :quant @divExact(indent, self.indentation.spaces);
                 } else indent;
 
                 const shift: LineShift = if (quantized > self.last_indent) rel: {
-                    if ((quantized - self.last_indent) > 1)
+                    if ((quantized - self.last_indent) > 1) {
+                        self.buffer.diag().line_offset = 0;
+                        self.buffer.diag().length = indent;
+                        self.buffer.diag().message = "this line contains too much indentation";
                         return error.TooMuchIndentation;
+                    }
                     break :rel .indent;
                 } else if (quantized < self.last_indent)
                     .{ .dedent = self.last_indent - quantized }
@@ -134,10 +158,12 @@ pub fn LineTokenizer(comptime Buffer: type) type {
                     .none;
 
                 defer {
-                    self.row += 1;
                     self.last_indent = quantized;
                 }
 
+                // update the diagnostics so that the parser can use them without
+                // knowing about the whitespace.
+                self.buffer.diag().line_offset = indent;
                 const line = raw_line[indent..];
 
                 // this should not be possible, as empty lines are caught earlier.
@@ -147,7 +173,12 @@ pub fn LineTokenizer(comptime Buffer: type) type {
                     '#' => {
                         // force comments to be followed by a space. This makes them
                         // behave the same way as strings, actually.
-                        if (line.len > 1 and line[1] != ' ') return error.BadToken;
+                        if (line.len > 1 and line[1] != ' ') {
+                            self.buffer.diag().line_offset += 1;
+                            self.buffer.diag().length = 1;
+                            self.buffer.diag().message = "this line is missing a space after the start of comment character '#'";
+                            return error.BadToken;
+                        }
 
                         // simply lie about indentation when the line is a comment.
                         quantized = self.last_indent;
@@ -160,12 +191,21 @@ pub fn LineTokenizer(comptime Buffer: type) type {
                     '|', '>', '[', '{' => {
                         return .{
                             .shift = shift,
-                            .contents = .{ .in_line = try detectInlineItem(line) },
+                            .contents = .{ .in_line = try self.detectInlineItem(line) },
                             .raw = line,
                         };
                     },
                     '-' => {
-                        if (line.len > 1 and line[1] != ' ') return error.BadToken;
+                        if (line.len > 1 and line[1] != ' ') {
+                            self.buffer.diag().line_offset += 1;
+                            self.buffer.diag().length = 1;
+                            self.buffer.diag().message = "this line is missing a space after the list entry character '-'";
+                            return error.BadToken;
+                        }
+
+                        // blindly add 2 here because an empty item cannot fail in
+                        // the value, only if a bogus dedent has occurred
+                        self.buffer.diag().line_offset += 2;
 
                         return if (line.len == 1) .{
                             .shift = shift,
@@ -173,26 +213,33 @@ pub fn LineTokenizer(comptime Buffer: type) type {
                             .raw = line,
                         } else .{
                             .shift = shift,
-                            .contents = .{ .list_item = try detectInlineItem(line[2..]) },
+                            .contents = .{ .list_item = try self.detectInlineItem(line[2..]) },
                             .raw = line,
                         };
                     },
                     else => {
                         for (line, 0..) |char, idx| {
                             if (char == ':') {
+                                self.buffer.diag().line_offset += idx + 2;
+
                                 if (idx + 1 == line.len) return .{
                                     .shift = shift,
                                     .contents = .{ .map_item = .{ .key = line[0..idx], .val = .empty } },
                                     .raw = line,
                                 };
 
-                                if (line[idx + 1] != ' ') return error.BadToken;
+                                if (line[idx + 1] != ' ') {
+                                    self.buffer.diag().line_offset += idx + 1;
+                                    self.buffer.diag().length = 1;
+                                    self.buffer.diag().message = "this line is missing a space after the map key-value separator character ':'";
+                                    return error.BadToken;
+                                }
 
                                 return .{
                                     .shift = shift,
                                     .contents = .{ .map_item = .{
                                         .key = line[0..idx],
-                                        .val = try detectInlineItem(line[idx + 2 ..]),
+                                        .val = try self.detectInlineItem(line[idx + 2 ..]),
                                     } },
                                     .raw = line,
                                 };
@@ -208,12 +255,16 @@ pub fn LineTokenizer(comptime Buffer: type) type {
                 }
 
                 // somehow everything else has failed
+                self.buffer.diag().line_offset = 0;
+                self.buffer.diag().length = raw_line.len;
+                self.buffer.diag().message = "this document contains an unknown error. Please report this.";
                 return error.Impossible;
             }
             return null;
         }
 
-        fn detectInlineItem(buf: []const u8) Error!InlineItem {
+        // TODO: it's impossible to get the right diagnostic offset in this function at the moment
+        fn detectInlineItem(self: @This(), buf: []const u8) Error!InlineItem {
             if (buf.len == 0) return .empty;
 
             switch (buf[0]) {
@@ -221,7 +272,12 @@ pub fn LineTokenizer(comptime Buffer: type) type {
                     if (buf.len > 1 and buf[1] != ' ') return error.BadToken;
 
                     const slice: []const u8 = switch (buf[buf.len - 1]) {
-                        ' ', '\t' => return error.TrailingWhitespace,
+                        ' ', '\t' => {
+                            self.buffer.diag().line_offset = 0;
+                            self.buffer.diag().length = 1;
+                            self.buffer.diag().message = "this line contains trailing whitespace";
+                            return error.TrailingWhitespace;
+                        },
                         '|' => buf[@min(2, buf.len) .. buf.len - @intFromBool(buf.len > 1)],
                         else => buf[@min(2, buf.len)..buf.len],
                     };
@@ -232,22 +288,34 @@ pub fn LineTokenizer(comptime Buffer: type) type {
                         .{ .space_string = slice };
                 },
                 '[' => {
-                    if (buf.len < 2 or buf[buf.len - 1] != ']')
+                    if (buf.len < 2 or buf[buf.len - 1] != ']') {
+                        self.buffer.diag().line_offset = 0;
+                        self.buffer.diag().length = 1;
+                        self.buffer.diag().message = "this line contains a flow-style list but does not end with the closing character ']'";
                         return error.BadToken;
+                    }
 
                     // keep the closing ] for the flow parser
                     return .{ .flow_list = buf[1..] };
                 },
                 '{' => {
-                    if (buf.len < 2 or buf[buf.len - 1] != '}')
+                    if (buf.len < 2 or buf[buf.len - 1] != '}') {
+                        self.buffer.diag().line_offset = 0;
+                        self.buffer.diag().length = 1;
+                        self.buffer.diag().message = "this line contains a flow-style map but does not end with the closing character '}'";
                         return error.BadToken;
+                    }
 
                     // keep the closing } fpr the flow parser
                     return .{ .flow_map = buf[1..] };
                 },
                 else => {
-                    if (buf[buf.len - 1] == ' ' or buf[buf.len - 1] == '\t')
+                    if (buf[buf.len - 1] == ' ' or buf[buf.len - 1] == '\t') {
+                        self.buffer.diag().line_offset = 0;
+                        self.buffer.diag().length = 1;
+                        self.buffer.diag().message = "this line contains trailing whitespace";
                         return error.TrailingWhitespace;
+                    }
 
                     return .{ .scalar = buf };
                 },

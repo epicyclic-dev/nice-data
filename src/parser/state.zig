@@ -4,6 +4,7 @@ const tokenizer = @import("../tokenizer.zig");
 const Error = @import("../parser.zig").Error;
 const DuplicateKeyBehavior = @import("../parser.zig").DuplicateKeyBehavior;
 const Options = @import("../parser.zig").Options;
+const Diagnostics = @import("../parser.zig").Diagnostics;
 const Value = @import("./value.zig").Value;
 
 pub const Document = struct {
@@ -42,14 +43,16 @@ pub const State = struct {
     pub const Stack = std.ArrayList(*Value);
 
     document: Document,
+    diagnostics: *Diagnostics,
     value_stack: Stack,
     mode: enum { initial, value, done } = .initial,
     expect_shift: tokenizer.ShiftDirection = .none,
     dangling_key: ?[]const u8 = null,
 
-    pub fn init(allocator: std.mem.Allocator) State {
+    pub fn init(allocator: std.mem.Allocator, diagnostics: *Diagnostics) State {
         return .{
             .document = Document.init(allocator),
+            .diagnostics = diagnostics,
             .value_stack = Stack.init(allocator),
         };
     }

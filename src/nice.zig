@@ -68,3 +68,4 @@ pub const parseBuffer = parser.parseBuffer;
 pub const StreamParser = parser.StreamParser;
 pub const Document = parser.Document;
 pub const Value = parser.Value;
+pub const Diagnostics = parser.Diagnostics;
