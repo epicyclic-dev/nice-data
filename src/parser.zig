@@ -54,6 +54,10 @@ pub fn parseBuffer(allocator: std.mem.Allocator, buffer: []const u8, options: Op
     };
 
     while (try tok.next()) |line| try state.parseLine(line, options.duplicate_key_behavior);
+    // state doesn't have access to the tokenizer, which is the only thing that can
+    // error if unparsed lines remain in the buffer by the time that "finish" is
+    // called.
+    try tok.finish();
     return try state.finish(options);
 }
 
@@ -90,6 +94,7 @@ pub const StreamParser = struct {
     }
 
     pub fn finish(self: *StreamParser) !Document {
+        try self.linetok.finish();
         return try self.parse_state.finish(self.parse_options);
     }
 };

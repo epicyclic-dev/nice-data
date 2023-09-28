@@ -60,6 +60,10 @@ pub fn LineBuffer(comptime options: Strictness) type {
             };
         }
 
+        pub fn empty(self: @This()) bool {
+            return self.internal.empty();
+        }
+
         pub fn deinit(self: @This()) void {
             self.allocator.free(self.internal.buffer);
         }
@@ -110,6 +114,12 @@ pub fn FixedLineBuffer(comptime options: Strictness) type {
 
         pub fn init(data: []const u8) @This() {
             return .{ .buffer = data, .window = .{ .start = 0, .len = data.len } };
+        }
+
+        pub fn empty(self: @This()) bool {
+            // we can't check the overall buffer size because the dynamic buffer may be
+            // overallocated
+            return self.window.len == 0;
         }
 
         pub fn nextLine(self: *@This()) !?[]const u8 {

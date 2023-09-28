@@ -70,6 +70,12 @@ pub fn LineTokenizer(comptime Buffer: type) type {
         diagnostics: *Diagnostics,
         row: usize = 0,
 
+        pub fn finish(self: @This()) !void {
+            if (!self.buffer.empty()) {
+                return error.ExtraContent;
+            }
+        }
+
         pub fn next(self: *@This()) !?Line {
             lineloop: while (try self.buffer.nextLine()) |raw_line| {
                 var indent: usize = 0;
