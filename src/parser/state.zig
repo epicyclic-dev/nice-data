@@ -69,7 +69,11 @@ pub const State = struct {
                 .string => state.document.root = Value.newString(arena_alloc),
                 .list => state.document.root = Value.newList(arena_alloc),
                 .map => state.document.root = Value.newMap(arena_alloc),
-                .fail => return error.EmptyDocument,
+                .fail => {
+                    state.diagnostics.length = 0;
+                    state.diagnostics.message = "the document is empty";
+                    return error.EmptyDocument;
+                },
             },
             .value => switch (state.value_stack.getLast().*) {
                 // remove the final trailing newline or space
@@ -77,7 +81,7 @@ pub const State = struct {
                 // if we have a dangling -, attach an empty string to it
                 .list => |*list| if (state.expect_shift == .indent) try list.append(Value.newScalar(arena_alloc)),
                 // if we have a dangling "key:", attach an empty string to it
-                .map => |*map| if (state.dangling_key) |dk| try putMap(
+                .map => |*map| if (state.dangling_key) |dk| try state.putMap(
                     map,
                     dk,
                     Value.newScalar(arena_alloc),
@@ -101,7 +105,11 @@ pub const State = struct {
         restack: while (true) : (firstpass = false) {
             switch (state.mode) {
                 .initial => {
-                    if (line.shift == .indent) return error.UnexpectedIndent;
+                    if (line.shift == .indent) {
+                        state.diagnostics.length = 1;
+                        state.diagnostics.message = "the first object in the document cannot be indented";
+                        return error.UnexpectedIndent;
+                    }
 
                     switch (line.contents) {
                         // we filter out comments above
@@ -172,8 +180,11 @@ pub const State = struct {
                     // switch is embedded.
                     .scalar, .flow_list, .flow_map => return error.Fail,
                     .string => |*string| {
-                        if (line.shift == .indent)
+                        if (line.shift == .indent) {
+                            state.diagnostics.length = 1;
+                            state.diagnostics.message = "the document contains an invalid indented line in a multiline string";
                             return error.UnexpectedIndent;
+                        }
 
                         if (firstpass and line.shift == .dedent) {
                             // kick off the last trailing space or newline
@@ -194,9 +205,17 @@ pub const State = struct {
                                     try string.appendSlice(str);
                                     try string.append(in_line.lineEnding());
                                 },
-                                else => return error.UnexpectedValue,
+                                else => {
+                                    state.diagnostics.length = 1;
+                                    state.diagnostics.message = "the document contains an invalid object in a multiline string";
+                                    return error.UnexpectedValue;
+                                },
                             },
-                            else => return error.UnexpectedValue,
+                            else => {
+                                state.diagnostics.length = 1;
+                                state.diagnostics.message = "the document contains an invalid object in a multiline string";
+                                return error.UnexpectedValue;
+                            },
                         }
                     },
                     .list => |*list| {
@@ -233,8 +252,11 @@ pub const State = struct {
                             .comment => unreachable,
                             .in_line => |in_line| {
                                 // assert that this line has been indented and that indentation is expected.
-                                if (state.expect_shift != .indent or line.shift != .indent)
+                                if (state.expect_shift != .indent or line.shift != .indent) {
+                                    state.diagnostics.length = 1;
+                                    state.diagnostics.message = "the document contains an invalid inline object in a list";
                                     return error.UnexpectedValue;
+                                }
 
                                 state.expect_shift = .dedent;
                                 switch (in_line) {
@@ -279,8 +301,11 @@ pub const State = struct {
                                 //
                                 // dedenting back to the list stack level requires list_item
 
-                                if (state.expect_shift != .indent or line.shift != .indent)
+                                if (state.expect_shift != .indent or line.shift != .indent) {
+                                    state.diagnostics.length = 1;
+                                    state.diagnostics.message = "the document contains an invalid map key in a list";
                                     return error.UnexpectedValue;
+                                }
 
                                 const new_map = try appendListGetValue(list, Value.newMap(arena_alloc));
                                 try state.value_stack.append(new_map);
@@ -298,9 +323,13 @@ pub const State = struct {
                         // the first line here creates the state.expect_shift, but the second line
                         // is a valid continuation of the map despite not being indented
                         if (firstpass and (state.expect_shift == .indent and line.shift != .indent)) {
-                            try putMap(
+                            try state.putMap(
                                 map,
-                                state.dangling_key orelse return error.Fail,
+                                state.dangling_key orelse {
+                                    state.diagnostics.length = 1;
+                                    state.diagnostics.message = "the document is somehow missing a key (this shouldn't be possible)";
+                                    return error.Fail;
+                                },
                                 Value.newScalar(arena_alloc),
                                 dkb,
                             );
@@ -321,21 +350,24 @@ pub const State = struct {
                             .in_line => |in_line| {
                                 // assert that this line has been indented. this is required for an inline value when
                                 // the stack is in map mode.
-                                if (state.expect_shift != .indent or line.shift != .indent or state.dangling_key == null)
+                                if (state.expect_shift != .indent or line.shift != .indent or state.dangling_key == null) {
+                                    state.diagnostics.length = 1;
+                                    state.diagnostics.message = "the document contains an invalid inline object in a map";
                                     return error.UnexpectedValue;
+                                }
 
                                 state.expect_shift = .dedent;
 
                                 switch (in_line) {
                                     .empty => unreachable,
-                                    .scalar => |str| try putMap(map, state.dangling_key.?, try Value.fromScalar(arena_alloc, str), dkb),
-                                    .flow_list => |str| try putMap(map, state.dangling_key.?, try state.parseFlow(str, .flow_list, dkb), dkb),
+                                    .scalar => |str| try state.putMap(map, state.dangling_key.?, try Value.fromScalar(arena_alloc, str), dkb),
+                                    .flow_list => |str| try state.putMap(map, state.dangling_key.?, try state.parseFlow(str, .flow_list, dkb), dkb),
                                     .flow_map => |str| {
-                                        try putMap(map, state.dangling_key.?, try state.parseFlow(str, .flow_map, dkb), dkb);
+                                        try state.putMap(map, state.dangling_key.?, try state.parseFlow(str, .flow_map, dkb), dkb);
                                     },
                                     .line_string, .space_string => |str| {
                                         // string pushes the stack
-                                        const new_string = try putMapGetValue(map, state.dangling_key.?, try Value.fromString(arena_alloc, str), dkb);
+                                        const new_string = try state.putMapGetValue(map, state.dangling_key.?, try Value.fromString(arena_alloc, str), dkb);
                                         try new_string.string.append(in_line.lineEnding());
                                         try state.value_stack.append(new_string);
                                         state.expect_shift = .none;
@@ -353,10 +385,13 @@ pub const State = struct {
                                 //
                                 // dedenting back to the map stack level requires map_item
 
-                                if (state.expect_shift != .indent or line.shift != .indent or state.dangling_key == null)
+                                if (state.expect_shift != .indent or line.shift != .indent or state.dangling_key == null) {
+                                    state.diagnostics.length = 1;
+                                    state.diagnostics.message = "the document contains an invalid list item in a map";
                                     return error.UnexpectedValue;
+                                }
 
-                                const new_list = try putMapGetValue(map, state.dangling_key.?, Value.newList(arena_alloc), dkb);
+                                const new_list = try state.putMapGetValue(map, state.dangling_key.?, Value.newList(arena_alloc), dkb);
                                 try state.value_stack.append(new_list);
                                 state.dangling_key = null;
                                 state.expect_shift = .none;
@@ -371,15 +406,19 @@ pub const State = struct {
                                             state.expect_shift = .indent;
                                             state.dangling_key = dupekey;
                                         },
-                                        .scalar => |str| try putMap(map, dupekey, try Value.fromScalar(arena_alloc, str), dkb),
-                                        .line_string, .space_string => |str| try putMap(map, dupekey, try Value.fromString(arena_alloc, str), dkb),
-                                        .flow_list => |str| try putMap(map, dupekey, try state.parseFlow(str, .flow_list, dkb), dkb),
-                                        .flow_map => |str| try putMap(map, dupekey, try state.parseFlow(str, .flow_map, dkb), dkb),
+                                        .scalar => |str| try state.putMap(map, dupekey, try Value.fromScalar(arena_alloc, str), dkb),
+                                        .line_string, .space_string => |str| try state.putMap(map, dupekey, try Value.fromString(arena_alloc, str), dkb),
+                                        .flow_list => |str| try state.putMap(map, dupekey, try state.parseFlow(str, .flow_list, dkb), dkb),
+                                        .flow_map => |str| try state.putMap(map, dupekey, try state.parseFlow(str, .flow_map, dkb), dkb),
                                     }
                                 } else if (line.shift == .indent) {
-                                    if (state.expect_shift != .indent or state.dangling_key == null) return error.UnexpectedValue;
+                                    if (state.expect_shift != .indent or state.dangling_key == null) {
+                                        state.diagnostics.length = 1;
+                                        state.diagnostics.message = "the document contains indented map item in a map";
+                                        return error.UnexpectedValue;
+                                    }
 
-                                    const new_map = try putMapGetValue(map, state.dangling_key.?, Value.newMap(arena_alloc), dkb);
+                                    const new_map = try state.putMapGetValue(map, state.dangling_key.?, Value.newMap(arena_alloc), dkb);
                                     try state.value_stack.append(new_map);
                                     state.dangling_key = null;
                                     continue :restack;
@@ -388,7 +427,11 @@ pub const State = struct {
                         }
                     },
                 },
-                .done => return error.ExtraContent,
+                .done => {
+                    state.diagnostics.length = 1;
+                    state.diagnostics.message = "the document contains extra data after the top level structure";
+                    return error.ExtraContent;
+                },
             }
 
             // the stack has not changed, so break the loop
@@ -407,7 +450,11 @@ pub const State = struct {
         var root: Value = switch (root_type) {
             .flow_list => Value.newFlowList(arena_alloc),
             .flow_map => Value.newFlowMap(arena_alloc),
-            else => return error.BadState,
+            else => {
+                state.diagnostics.length = 1;
+                state.diagnostics.message = "the flow item was closed too many times";
+                return error.BadState;
+            },
         };
         var pstate: FlowParseState = switch (root_type) {
             .flow_list => .want_list_item,
@@ -456,7 +503,11 @@ pub const State = struct {
                         pstate = .want_list_item;
                     },
                     ']' => {
-                        const finished = state.value_stack.getLastOrNull() orelse return error.BadState;
+                        const finished = state.value_stack.getLastOrNull() orelse {
+                            state.diagnostics.length = 1;
+                            state.diagnostics.message = "the flow list was closed too many times";
+                            return error.BadState;
+                        };
                         if (finished.flow_list.items.len > 0 or idx > item_start)
                             try finished.flow_list.append(Value.newScalar(arena_alloc));
                         pstate = try state.popFlowStack();
@@ -478,7 +529,11 @@ pub const State = struct {
                         pstate = .want_list_item;
                     },
                     ']' => {
-                        const finished = state.value_stack.getLastOrNull() orelse return error.BadState;
+                        const finished = state.value_stack.getLastOrNull() orelse {
+                            state.diagnostics.length = 1;
+                            state.diagnostics.message = "the flow list was closed too many times";
+                            return error.BadState;
+                        };
                         try finished.flow_list.append(
                             try Value.fromScalar(arena_alloc, contents[item_start..idx]),
                         );
@@ -493,14 +548,22 @@ pub const State = struct {
                         pstate = .want_list_item;
                     },
                     ']' => pstate = try state.popFlowStack(),
-                    else => return error.BadToken,
+                    else => return {
+                        state.diagnostics.length = 1;
+                        state.diagnostics.message = "the document contains an invalid flow list separator";
+                        return error.BadToken;
+                    },
                 },
                 .want_map_key => switch (char) {
                     ' ', '\t' => continue :charloop,
                     // forbid these characters so that flow dictionary keys cannot start
                     // with characters that regular dictionary keys cannot start with
                     // (even though they're unambiguous in this specific context).
-                    '{', '[', '#', '-', '>', '|', ',' => return error.BadToken,
+                    '{', '[', '#', '-', '>', '|', ',' => return {
+                        state.diagnostics.length = 1;
+                        state.diagnostics.message = "this document contains a flow map key that starts with an invalid character";
+                        return error.BadToken;
+                    },
                     ':' => {
                         // we have an empty map key
                         dangling_key = "";
@@ -523,7 +586,7 @@ pub const State = struct {
                     ' ', '\t' => continue :charloop,
                     ',' => {
                         const tip = try state.getStackTip();
-                        try putMap(
+                        try state.putMap(
                             &tip.flow_map,
                             dangling_key.?,
                             Value.newScalar(arena_alloc),
@@ -536,7 +599,7 @@ pub const State = struct {
                     '[' => {
                         const tip = try state.getStackTip();
 
-                        const new_list = try putMapGetValue(
+                        const new_list = try state.putMapGetValue(
                             &tip.flow_map,
                             dangling_key.?,
                             Value.newFlowList(arena_alloc),
@@ -551,7 +614,7 @@ pub const State = struct {
                     '{' => {
                         const tip = try state.getStackTip();
 
-                        const new_map = try putMapGetValue(
+                        const new_map = try state.putMapGetValue(
                             &tip.flow_map,
                             dangling_key.?,
                             Value.newFlowMap(arena_alloc),
@@ -565,7 +628,7 @@ pub const State = struct {
                     '}' => {
                         // the value is an empty string and this map is closed
                         const tip = try state.getStackTip();
-                        try putMap(
+                        try state.putMap(
                             &tip.flow_map,
                             dangling_key.?,
                             Value.newScalar(arena_alloc),
@@ -583,7 +646,7 @@ pub const State = struct {
                 .consuming_map_value => switch (char) {
                     ',', '}' => |term| {
                         const tip = try state.getStackTip();
-                        try putMap(
+                        try state.putMap(
                             &tip.flow_map,
                             dangling_key.?,
                             try Value.fromScalar(arena_alloc, contents[item_start..idx]),
@@ -599,26 +662,46 @@ pub const State = struct {
                     ' ', '\t' => continue :charloop,
                     ',' => pstate = .want_map_key,
                     '}' => pstate = try state.popFlowStack(),
-                    else => return error.BadToken,
+                    else => return {
+                        state.diagnostics.length = 1;
+                        state.diagnostics.message = "this document contains an invalid character instead of a flow map separator";
+                        return error.BadToken;
+                    },
                 },
                 // the root value was closed but there are characters remaining
                 // in the buffer
-                .done => return error.BadState,
+                .done => return {
+                    state.diagnostics.length = 1;
+                    state.diagnostics.message = "this document extra data after single item";
+                    return error.BadState;
+                },
             }
         }
         // we ran out of characters while still in the middle of an object
-        if (pstate != .done) return error.BadState;
+        if (pstate != .done) return {
+            state.diagnostics.length = 1;
+            state.diagnostics.message = "this document contains an unterminated flow item";
+            return error.BadState;
+        };
 
         return root;
     }
 
     inline fn getStackTip(state: State) Error!*Value {
-        if (state.value_stack.items.len == 0) return error.BadState;
+        if (state.value_stack.items.len == 0) return {
+            state.diagnostics.length = 1;
+            state.diagnostics.message = "this document contains an unexpected bottom of the stack";
+            return error.BadState;
+        };
         return state.value_stack.items[state.value_stack.items.len - 1];
     }
 
     inline fn popFlowStack(state: *State) Error!FlowParseState {
-        if (state.value_stack.popOrNull() == null) return error.BadState;
+        if (state.value_stack.popOrNull() == null) {
+            state.diagnostics.length = 1;
+            state.diagnostics.message = "this document contains an unexpected bottom of the stack";
+            return error.BadState;
+        }
         const parent = state.value_stack.getLastOrNull() orelse return .done;
 
         return switch (parent.*) {
@@ -633,16 +716,20 @@ pub const State = struct {
         return &list.items[list.items.len - 1];
     }
 
-    inline fn putMap(map: *Value.Map, key: []const u8, value: Value, dkb: DuplicateKeyBehavior) Error!void {
-        _ = try putMapGetValue(map, key, value, dkb);
+    inline fn putMap(state: *State, map: *Value.Map, key: []const u8, value: Value, dkb: DuplicateKeyBehavior) Error!void {
+        _ = try state.putMapGetValue(map, key, value, dkb);
     }
 
-    inline fn putMapGetValue(map: *Value.Map, key: []const u8, value: Value, dkb: DuplicateKeyBehavior) Error!*Value {
+    inline fn putMapGetValue(state: *State, map: *Value.Map, key: []const u8, value: Value, dkb: DuplicateKeyBehavior) Error!*Value {
         const gop = try map.getOrPut(key);
 
         if (gop.found_existing)
             switch (dkb) {
-                .fail => return error.DuplicateKey,
+                .fail => {
+                    state.diagnostics.length = 1;
+                    state.diagnostics.message = "this document contains a duplicate key";
+                    return error.DuplicateKey;
+                },
                 .use_first => {},
                 .use_last => gop.value_ptr.* = value,
             }
