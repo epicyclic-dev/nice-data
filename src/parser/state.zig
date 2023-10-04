@@ -5,27 +5,8 @@ const Error = @import("../parser.zig").Error;
 const DuplicateKeyBehavior = @import("../parser.zig").DuplicateKeyBehavior;
 const Options = @import("../parser.zig").Options;
 const Diagnostics = @import("../parser.zig").Diagnostics;
+const Document = @import("./value.zig").Document;
 const Value = @import("./value.zig").Value;
-
-pub const Document = struct {
-    arena: std.heap.ArenaAllocator,
-    root: Value,
-
-    pub fn init(alloc: std.mem.Allocator) Document {
-        return .{
-            .arena = std.heap.ArenaAllocator.init(alloc),
-            .root = undefined,
-        };
-    }
-
-    pub fn printDebug(self: Document) void {
-        return self.root.printDebug();
-    }
-
-    pub fn deinit(self: Document) void {
-        self.arena.deinit();
-    }
-};
 
 const FlowParseState = enum {
     want_list_item,
