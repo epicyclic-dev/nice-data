@@ -42,7 +42,7 @@ pub const State = struct {
         self.value_stack.deinit();
     }
 
-    pub fn finish(state: *State, options: Options) Error!Document {
+    pub fn finish(state: *State, options: Options) !Document {
         const arena_alloc = state.document.arena.allocator();
 
         switch (state.mode) {
@@ -76,7 +76,7 @@ pub const State = struct {
         return state.document;
     }
 
-    pub fn parseLine(state: *State, line: tokenizer.Line, dkb: DuplicateKeyBehavior) Error!void {
+    pub fn parseLine(state: *State, line: tokenizer.Line, dkb: DuplicateKeyBehavior) !void {
         if (line.contents == .comment) return;
 
         // this gives us a second loop when the stack tip changes (i.e. during dedent or
@@ -425,7 +425,7 @@ pub const State = struct {
         contents: []const u8,
         root_type: Value.TagType,
         dkb: DuplicateKeyBehavior,
-    ) Error!Value {
+    ) !Value {
         const arena_alloc = state.document.arena.allocator();
 
         var root: Value = switch (root_type) {
@@ -443,7 +443,7 @@ pub const State = struct {
             else => unreachable,
         };
 
-        // used to distinguish betwen [] and [ ], and it also tracks
+        // used to distinguish between [] and [ ], and it also tracks
         // a continuous value between different states
         var item_start: usize = 0;
         var dangling_key: ?[]const u8 = null;
@@ -668,7 +668,7 @@ pub const State = struct {
         return root;
     }
 
-    inline fn getStackTip(state: State) Error!*Value {
+    inline fn getStackTip(state: State) !*Value {
         if (state.value_stack.items.len == 0) return {
             state.diagnostics.length = 1;
             state.diagnostics.message = "this document contains an unexpected bottom of the stack";
@@ -677,7 +677,7 @@ pub const State = struct {
         return state.value_stack.items[state.value_stack.items.len - 1];
     }
 
-    inline fn popFlowStack(state: *State) Error!FlowParseState {
+    inline fn popFlowStack(state: *State) !FlowParseState {
         if (state.value_stack.popOrNull() == null) {
             state.diagnostics.length = 1;
             state.diagnostics.message = "this document contains an unexpected bottom of the stack";
@@ -692,16 +692,16 @@ pub const State = struct {
         };
     }
 
-    inline fn appendListGetValue(list: *Value.List, value: Value) Error!*Value {
+    inline fn appendListGetValue(list: *Value.List, value: Value) !*Value {
         try list.append(value);
         return &list.items[list.items.len - 1];
     }
 
-    inline fn putMap(state: *State, map: *Value.Map, key: []const u8, value: Value, dkb: DuplicateKeyBehavior) Error!void {
+    inline fn putMap(state: *State, map: *Value.Map, key: []const u8, value: Value, dkb: DuplicateKeyBehavior) !void {
         _ = try state.putMapGetValue(map, key, value, dkb);
     }
 
-    inline fn putMapGetValue(state: *State, map: *Value.Map, key: []const u8, value: Value, dkb: DuplicateKeyBehavior) Error!*Value {
+    inline fn putMapGetValue(state: *State, map: *Value.Map, key: []const u8, value: Value, dkb: DuplicateKeyBehavior) !*Value {
         const gop = try map.getOrPut(key);
 
         if (gop.found_existing)
