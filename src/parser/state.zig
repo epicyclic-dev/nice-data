@@ -455,6 +455,7 @@ pub const State = struct {
                     ' ', '\t' => continue :charloop,
                     ',' => {
                         // empty value
+                        // don't check for whitespace here: [ , ] is okay, as is [ , , ]
                         const tip = try state.getStackTip();
                         try tip.flow_list.append(Value.newScalar(arena_alloc));
                         item_start = idx + 1;
@@ -499,9 +500,18 @@ pub const State = struct {
                     },
                 },
                 .consuming_list_item => switch (char) {
+                    // consider: detecting trailing whitespace. "[ 1 ]" should
+                    // produce "1" and not "1 " as it currently does, which breaks
+                    // the principle of least astonishment. design: no trailing
+                    // whitespace before "," and only a single space is allowed before "]"
                     ',' => {
-                        const tip = try state.getStackTip();
+                        if (contents[idx - 1] == ' ' or contents[idx - 1] == '\t') {
+                            state.diagnostics.length = 1;
+                            state.diagnostics.message = "the flow list contains whitespace before ,";
+                            return error.TrailingWhitespace;
+                        }
 
+                        const tip = try state.getStackTip();
                         try tip.flow_list.append(
                             try Value.fromScalar(arena_alloc, contents[item_start..idx]),
                         );
@@ -510,13 +520,23 @@ pub const State = struct {
                         pstate = .want_list_item;
                     },
                     ']' => {
+                        var end = idx;
+                        if (contents[idx - 1] == ' ' or contents[idx - 1] == '\t') {
+                            if (idx > 1 and (contents[idx - 2] == ' ' or contents[idx - 2] == '\t')) {
+                                state.diagnostics.length = 1;
+                                state.diagnostics.message = "the flow list contains extra whitespace before ]";
+                                return error.TrailingWhitespace;
+                            }
+                            end = idx - 1;
+                        }
+
                         const finished = state.value_stack.getLastOrNull() orelse {
                             state.diagnostics.length = 1;
                             state.diagnostics.message = "the flow list was closed too many times";
                             return error.BadState;
                         };
                         try finished.flow_list.append(
-                            try Value.fromScalar(arena_alloc, contents[item_start..idx]),
+                            try Value.fromScalar(arena_alloc, contents[item_start..end]),
                         );
                         pstate = try state.popFlowStack();
                     },
@@ -558,6 +578,11 @@ pub const State = struct {
                 },
                 .consuming_map_key => switch (char) {
                     ':' => {
+                        if (contents[idx - 1] == ' ' or contents[idx - 1] == '\t') {
+                            state.diagnostics.length = 1;
+                            state.diagnostics.message = "the flow map contains whitespace before :";
+                            return error.TrailingWhitespace;
+                        }
                         dangling_key = try arena_alloc.dupe(u8, contents[item_start..idx]);
                         pstate = .want_map_value;
                     },
@@ -625,7 +650,12 @@ pub const State = struct {
                     },
                 },
                 .consuming_map_value => switch (char) {
-                    ',', '}' => |term| {
+                    ',' => {
+                        if (contents[idx - 1] == ' ' or contents[idx - 1] == '\t') {
+                            state.diagnostics.length = 1;
+                            state.diagnostics.message = "the flow map contains whitespace before ,";
+                            return error.TrailingWhitespace;
+                        }
                         const tip = try state.getStackTip();
                         try state.putMap(
                             &tip.flow_map,
@@ -635,7 +665,27 @@ pub const State = struct {
                         );
                         dangling_key = null;
                         pstate = .want_map_key;
-                        if (term == '}') pstate = try state.popFlowStack();
+                    },
+                    '}' => {
+                        var end = idx;
+                        if (contents[idx - 1] == ' ' or contents[idx - 1] == '\t') {
+                            if (idx > 1 and (contents[idx - 2] == ' ' or contents[idx - 2] == '\t')) {
+                                state.diagnostics.length = 1;
+                                state.diagnostics.message = "the flow map contains extra whitespace before }";
+                                return error.TrailingWhitespace;
+                            }
+                            end = idx - 1;
+                        }
+
+                        const tip = try state.getStackTip();
+                        try state.putMap(
+                            &tip.flow_map,
+                            dangling_key.?,
+                            try Value.fromScalar(arena_alloc, contents[item_start..end]),
+                            dkb,
+                        );
+                        dangling_key = null;
+                        pstate = try state.popFlowStack();
                     },
                     else => continue :charloop,
                 },
