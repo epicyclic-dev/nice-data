@@ -452,10 +452,10 @@ pub const State = struct {
         charloop: for (contents, 0..) |char, idx| {
             switch (pstate) {
                 .want_list_item => switch (char) {
-                    ' ', '\t' => continue :charloop,
+                    ' ' => continue :charloop,
+                    '\t' => return error.IllegalTabWhitespaceInLine,
                     ',' => {
                         // empty value
-                        // don't check for whitespace here: [ , ] is okay, as is [ , , ]
                         const tip = try state.getStackTip();
                         try tip.flow_list.append(Value.newScalar(arena_alloc));
                         item_start = idx + 1;
@@ -500,35 +500,33 @@ pub const State = struct {
                     },
                 },
                 .consuming_list_item => switch (char) {
-                    // consider: detecting trailing whitespace. "[ 1 ]" should
-                    // produce "1" and not "1 " as it currently does, which breaks
-                    // the principle of least astonishment. design: no trailing
-                    // whitespace before "," and only a single space is allowed before "]"
                     ',' => {
-                        if (contents[idx - 1] == ' ' or contents[idx - 1] == '\t') {
-                            state.diagnostics.length = 1;
-                            state.diagnostics.message = "the flow list contains whitespace before ,";
-                            return error.TrailingWhitespace;
-                        }
+                        const end = end: {
+                            var countup = @max(idx, 1) - 1;
+                            while (countup > 0) : (countup -= 1) {
+                                if (contents[countup] == '\t') return error.IllegalTabWhitespaceInLine;
+                                if (contents[countup] != ' ') break :end countup + 1;
+                            }
+                            break :end countup;
+                        };
 
                         const tip = try state.getStackTip();
                         try tip.flow_list.append(
-                            try Value.fromScalar(arena_alloc, contents[item_start..idx]),
+                            try Value.fromScalar(arena_alloc, contents[item_start..end]),
                         );
                         item_start = idx + 1;
 
                         pstate = .want_list_item;
                     },
                     ']' => {
-                        var end = idx;
-                        if (contents[idx - 1] == ' ' or contents[idx - 1] == '\t') {
-                            if (idx > 1 and (contents[idx - 2] == ' ' or contents[idx - 2] == '\t')) {
-                                state.diagnostics.length = 1;
-                                state.diagnostics.message = "the flow list contains extra whitespace before ]";
-                                return error.TrailingWhitespace;
+                        const end = end: {
+                            var countup = @max(idx, 1) - 1;
+                            while (countup > 0) : (countup -= 1) {
+                                if (contents[countup] == '\t') return error.IllegalTabWhitespaceInLine;
+                                if (contents[countup] != ' ') break :end countup + 1;
                             }
-                            end = idx - 1;
-                        }
+                            break :end countup;
+                        };
 
                         const finished = state.value_stack.getLastOrNull() orelse {
                             state.diagnostics.length = 1;
@@ -543,7 +541,8 @@ pub const State = struct {
                     else => continue :charloop,
                 },
                 .want_list_separator => switch (char) {
-                    ' ', '\t' => continue :charloop,
+                    ' ' => continue :charloop,
+                    '\t' => return error.IllegalTabWhitespaceInLine,
                     ',' => {
                         item_start = idx;
                         pstate = .want_list_item;
@@ -556,7 +555,8 @@ pub const State = struct {
                     },
                 },
                 .want_map_key => switch (char) {
-                    ' ', '\t' => continue :charloop,
+                    ' ' => continue :charloop,
+                    '\t' => return error.IllegalTabWhitespaceInLine,
                     // forbid these characters so that flow dictionary keys cannot start
                     // with characters that regular dictionary keys cannot start with
                     // (even though they're unambiguous in this specific context).
@@ -578,18 +578,22 @@ pub const State = struct {
                 },
                 .consuming_map_key => switch (char) {
                     ':' => {
-                        if (contents[idx - 1] == ' ' or contents[idx - 1] == '\t') {
-                            state.diagnostics.length = 1;
-                            state.diagnostics.message = "the flow map contains whitespace before :";
-                            return error.TrailingWhitespace;
-                        }
-                        dangling_key = try arena_alloc.dupe(u8, contents[item_start..idx]);
+                        const end = end: {
+                            var countup = @max(idx, 1) - 1;
+                            while (countup > 0) : (countup -= 1) {
+                                if (contents[countup] == '\t') return error.IllegalTabWhitespaceInLine;
+                                if (contents[countup] != ' ') break :end countup + 1;
+                            }
+                            break :end countup;
+                        };
+                        dangling_key = try arena_alloc.dupe(u8, contents[item_start..end]);
                         pstate = .want_map_value;
                     },
                     else => continue :charloop,
                 },
                 .want_map_value => switch (char) {
-                    ' ', '\t' => continue :charloop,
+                    ' ' => continue :charloop,
+                    '\t' => return error.IllegalTabWhitespaceInLine,
                     ',' => {
                         const tip = try state.getStackTip();
                         try state.putMap(
@@ -651,31 +655,34 @@ pub const State = struct {
                 },
                 .consuming_map_value => switch (char) {
                     ',' => {
-                        if (contents[idx - 1] == ' ' or contents[idx - 1] == '\t') {
-                            state.diagnostics.length = 1;
-                            state.diagnostics.message = "the flow map contains whitespace before ,";
-                            return error.TrailingWhitespace;
-                        }
+                        const end = end: {
+                            var countup = @max(idx, 1) - 1;
+                            while (countup > 0) : (countup -= 1) {
+                                if (contents[countup] == '\t') return error.IllegalTabWhitespaceInLine;
+                                if (contents[countup] != ' ') break :end countup + 1;
+                            }
+                            break :end countup;
+                        };
+
                         const tip = try state.getStackTip();
                         try state.putMap(
                             &tip.flow_map,
                             dangling_key.?,
-                            try Value.fromScalar(arena_alloc, contents[item_start..idx]),
+                            try Value.fromScalar(arena_alloc, contents[item_start..end]),
                             dkb,
                         );
                         dangling_key = null;
                         pstate = .want_map_key;
                     },
                     '}' => {
-                        var end = idx;
-                        if (contents[idx - 1] == ' ' or contents[idx - 1] == '\t') {
-                            if (idx > 1 and (contents[idx - 2] == ' ' or contents[idx - 2] == '\t')) {
-                                state.diagnostics.length = 1;
-                                state.diagnostics.message = "the flow map contains extra whitespace before }";
-                                return error.TrailingWhitespace;
+                        const end = end: {
+                            var countup = @max(idx, 1) - 1;
+                            while (countup > 0) : (countup -= 1) {
+                                if (contents[countup] == '\t') return error.IllegalTabWhitespaceInLine;
+                                if (contents[countup] != ' ') break :end countup + 1;
                             }
-                            end = idx - 1;
-                        }
+                            break :end countup;
+                        };
 
                         const tip = try state.getStackTip();
                         try state.putMap(
@@ -690,7 +697,8 @@ pub const State = struct {
                     else => continue :charloop,
                 },
                 .want_map_separator => switch (char) {
-                    ' ', '\t' => continue :charloop,
+                    ' ' => continue :charloop,
+                    '\t' => return error.IllegalTabWhitespaceInLine,
                     ',' => pstate = .want_map_key,
                     '}' => pstate = try state.popFlowStack(),
                     else => return {

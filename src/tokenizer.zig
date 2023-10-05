@@ -9,6 +9,7 @@ pub const Error = error{
     TooMuchIndentation,
     UnquantizedIndentation,
     TrailingWhitespace,
+    IllegalTabWhitespaceInLine,
     Impossible,
 };
 
@@ -220,13 +221,21 @@ pub fn LineTokenizer(comptime Buffer: type) type {
                     else => {
                         for (line, 0..) |char, idx| {
                             if (char == ':') {
-                                self.buffer.diag().line_offset += idx + 2;
+                                if (idx > 0 and (line[idx - 1] == ' ' or line[idx - 1] == '\t')) {
+                                    self.buffer.diag().line_offset += idx - 1;
+                                    self.buffer.diag().length = 1;
+                                    self.buffer.diag().message = "this line contains space before the map key-value separator character ':'";
+                                    return error.TrailingWhitespace;
+                                }
 
-                                if (idx + 1 == line.len) return .{
-                                    .shift = shift,
-                                    .contents = .{ .map_item = .{ .key = line[0..idx], .val = .empty } },
-                                    .raw = line,
-                                };
+                                if (idx + 1 == line.len) {
+                                    self.buffer.diag().line_offset += idx + 1;
+                                    return .{
+                                        .shift = shift,
+                                        .contents = .{ .map_item = .{ .key = line[0..idx], .val = .empty } },
+                                        .raw = line,
+                                    };
+                                }
 
                                 if (line[idx + 1] != ' ') {
                                     self.buffer.diag().line_offset += idx + 1;
@@ -267,9 +276,21 @@ pub fn LineTokenizer(comptime Buffer: type) type {
         fn detectInlineItem(self: @This(), buf: []const u8) Error!InlineItem {
             if (buf.len == 0) return .empty;
 
-            switch (buf[0]) {
+            const start = start: {
+                for (buf, 0..) |chr, idx|
+                    if (chr == ' ')
+                        continue
+                    else if (chr == '\t')
+                        return error.IllegalTabWhitespaceInLine
+                    else
+                        break :start idx;
+
+                return error.TrailingWhitespace;
+            };
+
+            switch (buf[start]) {
                 '>', '|' => |char| {
-                    if (buf.len > 1 and buf[1] != ' ') return error.BadToken;
+                    if (buf.len - start > 1 and buf[start + 1] != ' ') return error.BadToken;
 
                     const slice: []const u8 = switch (buf[buf.len - 1]) {
                         ' ', '\t' => {
@@ -278,8 +299,8 @@ pub fn LineTokenizer(comptime Buffer: type) type {
                             self.buffer.diag().message = "this line contains trailing whitespace";
                             return error.TrailingWhitespace;
                         },
-                        '|' => buf[@min(2, buf.len) .. buf.len - @intFromBool(buf.len > 1)],
-                        else => buf[@min(2, buf.len)..buf.len],
+                        '|' => buf[start + @min(2, buf.len - start) .. buf.len - @intFromBool(buf.len - start > 1)],
+                        else => buf[start + @min(2, buf.len - start) .. buf.len],
                     };
 
                     return if (char == '>')
@@ -288,7 +309,7 @@ pub fn LineTokenizer(comptime Buffer: type) type {
                         .{ .space_string = slice };
                 },
                 '[' => {
-                    if (buf.len < 2 or buf[buf.len - 1] != ']') {
+                    if (buf.len - start < 2 or buf[buf.len - 1] != ']') {
                         self.buffer.diag().line_offset = 0;
                         self.buffer.diag().length = 1;
                         self.buffer.diag().message = "this line contains a flow-style list but does not end with the closing character ']'";
@@ -296,10 +317,10 @@ pub fn LineTokenizer(comptime Buffer: type) type {
                     }
 
                     // keep the closing ] for the flow parser
-                    return .{ .flow_list = buf[1..] };
+                    return .{ .flow_list = buf[start + 1 ..] };
                 },
                 '{' => {
-                    if (buf.len < 2 or buf[buf.len - 1] != '}') {
+                    if (buf.len - start < 2 or buf[buf.len - 1] != '}') {
                         self.buffer.diag().line_offset = 0;
                         self.buffer.diag().length = 1;
                         self.buffer.diag().message = "this line contains a flow-style map but does not end with the closing character '}'";
@@ -307,7 +328,7 @@ pub fn LineTokenizer(comptime Buffer: type) type {
                     }
 
                     // keep the closing } fpr the flow parser
-                    return .{ .flow_map = buf[1..] };
+                    return .{ .flow_map = buf[start + 1 ..] };
                 },
                 else => {
                     if (buf[buf.len - 1] == ' ' or buf[buf.len - 1] == '\t') {
@@ -317,7 +338,7 @@ pub fn LineTokenizer(comptime Buffer: type) type {
                         return error.TrailingWhitespace;
                     }
 
-                    return .{ .scalar = buf };
+                    return .{ .scalar = buf[start..] };
                 },
             }
         }
