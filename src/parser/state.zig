@@ -26,6 +26,7 @@ pub const State = struct {
     document: Document,
     diagnostics: *Diagnostics,
     value_stack: Stack,
+    string_builder: std.ArrayListUnmanaged(u8),
     mode: enum { initial, value, done } = .initial,
     expect_shift: tokenizer.ShiftDirection = .none,
     dangling_key: ?[]const u8 = null,
@@ -35,6 +36,7 @@ pub const State = struct {
             .document = Document.init(allocator),
             .diagnostics = diagnostics,
             .value_stack = Stack.init(allocator),
+            .string_builder = std.ArrayListUnmanaged(u8){},
         };
     }
 
@@ -47,7 +49,7 @@ pub const State = struct {
 
         switch (state.mode) {
             .initial => switch (options.default_object) {
-                .string => state.document.root = Value.newString(arena_alloc),
+                .string => state.document.root = Value.emptyString(),
                 .list => state.document.root = Value.newList(arena_alloc),
                 .map => state.document.root = Value.newMap(arena_alloc),
                 .fail => {
@@ -58,14 +60,14 @@ pub const State = struct {
             },
             .value => switch (state.value_stack.getLast().*) {
                 // remove the final trailing newline or space
-                .string => |*string| _ = string.popOrNull(),
-                // if we have a dangling -, attach an empty string to it
-                .list => |*list| if (state.expect_shift == .indent) try list.append(Value.newScalar(arena_alloc)),
-                // if we have a dangling "key:", attach an empty string to it
+                .string => |*string| string.* = try state.string_builder.toOwnedSlice(arena_alloc),
+                // if we have a dangling -, attach an empty scalar to it
+                .list => |*list| if (state.expect_shift == .indent) try list.append(Value.emptyScalar()),
+                // if we have a dangling "key:", attach an empty scalar to it
                 .map => |*map| if (state.dangling_key) |dk| try state.putMap(
                     map,
                     dk,
-                    Value.newScalar(arena_alloc),
+                    Value.emptyScalar(),
                     options.duplicate_key_behavior,
                 ),
                 .scalar, .flow_list, .flow_map => {},
@@ -102,9 +104,9 @@ pub const State = struct {
                                 state.document.root = try Value.fromScalar(arena_alloc, str);
                                 state.mode = .done;
                             },
-                            .line_string, .space_string => |str| {
-                                state.document.root = try Value.fromString(arena_alloc, str);
-                                try state.document.root.string.append(in_line.lineEnding());
+                            .line_string, .concat_string => |str| {
+                                state.document.root = Value.emptyString();
+                                try state.string_builder.appendSlice(arena_alloc, str);
                                 try state.value_stack.append(&state.document.root);
                                 state.mode = .value;
                             },
@@ -126,7 +128,7 @@ pub const State = struct {
                             switch (value) {
                                 .empty => state.expect_shift = .indent,
                                 .scalar => |str| try rootlist.append(try Value.fromScalar(arena_alloc, str)),
-                                .line_string, .space_string => |str| try rootlist.append(try Value.fromString(arena_alloc, str)),
+                                .line_string, .concat_string => |str| try rootlist.append(try Value.fromString(arena_alloc, str)),
                                 .flow_list => |str| try rootlist.append(try state.parseFlow(str, .flow_list, dkb)),
                                 .flow_map => |str| try rootlist.append(try state.parseFlow(str, .flow_map, dkb)),
                             }
@@ -144,7 +146,7 @@ pub const State = struct {
                                     state.dangling_key = dupekey;
                                 },
                                 .scalar => |str| try rootmap.put(dupekey, try Value.fromScalar(arena_alloc, str)),
-                                .line_string, .space_string => |str| try rootmap.put(dupekey, try Value.fromString(arena_alloc, str)),
+                                .line_string, .concat_string => |str| try rootmap.put(dupekey, try Value.fromString(arena_alloc, str)),
                                 .flow_list => |str| try rootmap.put(dupekey, try state.parseFlow(str, .flow_list, dkb)),
                                 .flow_map => |str| try rootmap.put(dupekey, try state.parseFlow(str, .flow_map, dkb)),
                             }
@@ -163,13 +165,13 @@ pub const State = struct {
                     .string => |*string| {
                         if (line.shift == .indent) {
                             state.diagnostics.length = 1;
-                            state.diagnostics.message = "the document contains an invalid indented line in a multiline string";
+                            state.diagnostics.message = "the document contains invalid indentation in a multiline string";
                             return error.UnexpectedIndent;
                         }
 
                         if (firstpass and line.shift == .dedent) {
-                            // kick off the last trailing space or newline
-                            _ = string.pop();
+                            // copy the string into the document proper
+                            string.* = try state.string_builder.toOwnedSlice(arena_alloc);
 
                             var dedent_depth = line.shift.dedent;
                             while (dedent_depth > 0) : (dedent_depth -= 1)
@@ -182,9 +184,10 @@ pub const State = struct {
                             .comment => unreachable,
                             .in_line => |in_line| switch (in_line) {
                                 .empty => unreachable,
-                                .line_string, .space_string => |str| {
-                                    try string.appendSlice(str);
-                                    try string.append(in_line.lineEnding());
+                                inline .line_string, .concat_string => |str, tag| {
+                                    if (tag == .line_string)
+                                        try state.string_builder.append(arena_alloc, '\n');
+                                    try state.string_builder.appendSlice(arena_alloc, str);
                                 },
                                 else => {
                                     state.diagnostics.length = 1;
@@ -208,7 +211,7 @@ pub const State = struct {
                         // the first line here creates the state.expect_shift, but the second line
                         // is a valid continuation of the list despite not being indented
                         if (firstpass and (state.expect_shift == .indent and line.shift != .indent))
-                            try list.append(Value.newScalar(arena_alloc));
+                            try list.append(Value.emptyScalar());
 
                         // Consider:
                         //
@@ -245,9 +248,9 @@ pub const State = struct {
                                     .scalar => |str| try list.append(try Value.fromScalar(arena_alloc, str)),
                                     .flow_list => |str| try list.append(try state.parseFlow(str, .flow_list, dkb)),
                                     .flow_map => |str| try list.append(try state.parseFlow(str, .flow_map, dkb)),
-                                    .line_string, .space_string => |str| {
-                                        const new_string = try appendListGetValue(list, try Value.fromString(arena_alloc, str));
-                                        try new_string.string.append(in_line.lineEnding());
+                                    .line_string, .concat_string => |str| {
+                                        const new_string = try appendListGetValue(list, Value.emptyString());
+                                        try state.string_builder.appendSlice(arena_alloc, str);
                                         try state.value_stack.append(new_string);
                                         state.expect_shift = .none;
                                     },
@@ -259,7 +262,7 @@ pub const State = struct {
                                     switch (value) {
                                         .empty => state.expect_shift = .indent,
                                         .scalar => |str| try list.append(try Value.fromScalar(arena_alloc, str)),
-                                        .line_string, .space_string => |str| try list.append(try Value.fromString(arena_alloc, str)),
+                                        .line_string, .concat_string => |str| try list.append(try Value.fromString(arena_alloc, str)),
                                         .flow_list => |str| try list.append(try state.parseFlow(str, .flow_list, dkb)),
                                         .flow_map => |str| try list.append(try state.parseFlow(str, .flow_map, dkb)),
                                     }
@@ -311,7 +314,7 @@ pub const State = struct {
                                     state.diagnostics.message = "the document is somehow missing a key (this shouldn't be possible)";
                                     return error.Fail;
                                 },
-                                Value.newScalar(arena_alloc),
+                                Value.emptyScalar(),
                                 dkb,
                             );
                             state.dangling_key = null;
@@ -346,10 +349,10 @@ pub const State = struct {
                                     .flow_map => |str| {
                                         try state.putMap(map, state.dangling_key.?, try state.parseFlow(str, .flow_map, dkb), dkb);
                                     },
-                                    .line_string, .space_string => |str| {
+                                    .line_string, .concat_string => |str| {
                                         // string pushes the stack
-                                        const new_string = try state.putMapGetValue(map, state.dangling_key.?, try Value.fromString(arena_alloc, str), dkb);
-                                        try new_string.string.append(in_line.lineEnding());
+                                        const new_string = try state.putMapGetValue(map, state.dangling_key.?, Value.emptyString(), dkb);
+                                        try state.string_builder.appendSlice(arena_alloc, str);
                                         try state.value_stack.append(new_string);
                                         state.expect_shift = .none;
                                     },
@@ -388,7 +391,7 @@ pub const State = struct {
                                             state.dangling_key = dupekey;
                                         },
                                         .scalar => |str| try state.putMap(map, dupekey, try Value.fromScalar(arena_alloc, str), dkb),
-                                        .line_string, .space_string => |str| try state.putMap(map, dupekey, try Value.fromString(arena_alloc, str), dkb),
+                                        .line_string, .concat_string => |str| try state.putMap(map, dupekey, try Value.fromString(arena_alloc, str), dkb),
                                         .flow_list => |str| try state.putMap(map, dupekey, try state.parseFlow(str, .flow_list, dkb), dkb),
                                         .flow_map => |str| try state.putMap(map, dupekey, try state.parseFlow(str, .flow_map, dkb), dkb),
                                     }
@@ -457,7 +460,7 @@ pub const State = struct {
                     ',' => {
                         // empty value
                         const tip = try state.getStackTip();
-                        try tip.flow_list.append(Value.newScalar(arena_alloc));
+                        try tip.flow_list.append(Value.emptyScalar());
                         item_start = idx + 1;
                     },
                     '{' => {
@@ -491,7 +494,7 @@ pub const State = struct {
                             return error.BadState;
                         };
                         if (finished.flow_list.items.len > 0 or idx > item_start)
-                            try finished.flow_list.append(Value.newScalar(arena_alloc));
+                            try finished.flow_list.append(Value.emptyScalar());
                         pstate = try state.popFlowStack();
                     },
                     else => {
@@ -599,7 +602,7 @@ pub const State = struct {
                         try state.putMap(
                             &tip.flow_map,
                             dangling_key.?,
-                            Value.newScalar(arena_alloc),
+                            Value.emptyScalar(),
                             dkb,
                         );
 
@@ -641,7 +644,7 @@ pub const State = struct {
                         try state.putMap(
                             &tip.flow_map,
                             dangling_key.?,
-                            Value.newScalar(arena_alloc),
+                            Value.emptyScalar(),
                             dkb,
                         );
 

@@ -23,18 +23,10 @@ pub const InlineItem = union(enum) {
     empty: void,
     scalar: []const u8,
     line_string: []const u8,
-    space_string: []const u8,
+    concat_string: []const u8,
 
     flow_list: []const u8,
     flow_map: []const u8,
-
-    pub fn lineEnding(self: InlineItem) u8 {
-        return switch (self) {
-            .line_string => '\n',
-            .space_string => ' ',
-            else => unreachable,
-        };
-    }
 };
 
 pub const LineContents = union(enum) {
@@ -306,7 +298,7 @@ pub fn LineTokenizer(comptime Buffer: type) type {
                     return if (char == '>')
                         .{ .line_string = slice }
                     else
-                        .{ .space_string = slice };
+                        .{ .concat_string = slice };
                 },
                 '[' => {
                     if (buf.len - start < 2 or buf[buf.len - 1] != ']') {

@@ -41,7 +41,7 @@ pub fn Parsed(comptime T: type) type {
 }
 
 pub const Value = union(enum) {
-    pub const String = std.ArrayList(u8);
+    pub const String = []const u8;
     pub const Map = std.StringArrayHashMap(Value);
     pub const List = std.ArrayList(Value);
     pub const TagType = @typeInfo(Value).Union.tag_type.?;
@@ -57,8 +57,8 @@ pub const Value = union(enum) {
         switch (@typeInfo(T)) {
             .Void => {
                 switch (self) {
-                    .scalar => |str| return if (str.items.len == 0) void{} else error.BadValue,
-                    .string => |str| return if (options.coerce_strings and str.items.len == 0) void{} else error.BadValue,
+                    .scalar => |str| return if (str.len == 0) void{} else error.BadValue,
+                    .string => |str| return if (options.coerce_strings and str.len == 0) void{} else error.BadValue,
                     else => return error.BadValue,
                 }
             },
@@ -67,9 +67,9 @@ pub const Value = union(enum) {
                     inline .scalar, .string => |str, tag| {
                         if (tag == .string and !options.coerce_strings) return error.BadValue;
                         for (options.boolean_strings.truthy) |check|
-                            if (std.mem.eql(u8, str.items, check)) return true;
+                            if (std.mem.eql(u8, str, check)) return true;
                         for (options.boolean_strings.falsy) |check|
-                            if (std.mem.eql(u8, str.items, check)) return false;
+                            if (std.mem.eql(u8, str, check)) return false;
 
                         return error.BadValue;
                     },
@@ -80,8 +80,7 @@ pub const Value = union(enum) {
                 switch (self) {
                     inline .scalar, .string => |str, tag| {
                         if (tag == .string and !options.coerce_strings) return error.BadValue;
-                        std.debug.print("'{s}'\n", .{str.items});
-                        return try std.fmt.parseInt(T, str.items, 0);
+                        return try std.fmt.parseInt(T, str, 0);
                     },
                     else => return error.BadValue,
                 }
@@ -90,7 +89,7 @@ pub const Value = union(enum) {
                 switch (self) {
                     inline .scalar, .string => |str, tag| {
                         if (tag == .string and !options.coerce_strings) return error.BadValue;
-                        return try std.fmt.parseFloat(T, str.items, 0);
+                        return try std.fmt.parseFloat(T, str, 0);
                     },
                     else => return error.BadValue,
                 }
@@ -104,7 +103,7 @@ pub const Value = union(enum) {
                     //       probably be solved in the zig stdlib or similar.
                     // TODO: This also doesn't handle sentinels properly.
                     switch (self) {
-                        .scalar, .string => |str| return if (ptr.child == u8) str.items else error.BadValue,
+                        .scalar, .string => |str| return if (ptr.child == u8) str else error.BadValue,
                         .list, .flow_list => |lst| {
                             var result = try std.ArrayList(ptr.child).initCapacity(allocator, lst.items.len);
                             errdefer result.deinit();
@@ -133,9 +132,9 @@ pub const Value = union(enum) {
                 // TODO: This also doesn't handle sentinels properly.
                 switch (self) {
                     .scalar, .string => |str| {
-                        if (arr.child == u8 and str.items.len == arr.len) {
+                        if (arr.child == u8 and str.len == arr.len) {
                             var result: T = undefined;
-                            @memcpy(&result, str.items);
+                            @memcpy(&result, str);
                             return result;
                         } else return error.BadValue;
                     },
@@ -182,7 +181,6 @@ pub const Value = union(enum) {
                                 } else if (options.treat_omitted_as_null and @typeInfo(field.type) == .Optional) {
                                     @field(result, field.name) = null;
                                 } else {
-                                    std.debug.print("{s}\n", .{field.name});
                                     return error.BadValue;
                                 }
                             }
@@ -216,9 +214,9 @@ pub const Value = union(enum) {
                 switch (self) {
                     inline .scalar, .string => |str, tag| {
                         if (tag == .string and !options.coerce_strings) return error.BadValue;
-                        if (std.meta.stringToEnum(T, str.items)) |value| return value;
+                        if (std.meta.stringToEnum(T, str)) |value| return value;
                         if (options.allow_numeric_enums) {
-                            const parsed = std.fmt.parseInt(@typeInfo(T).Enum.tag_type, str.items, 10) catch
+                            const parsed = std.fmt.parseInt(@typeInfo(T).Enum.tag_type, str, 10) catch
                                 return error.BadValue;
                             return std.meta.intToEnum(T, parsed) catch error.BadValue;
                         }
@@ -255,7 +253,7 @@ pub const Value = union(enum) {
                     inline .scalar, .string => |str, tag| {
                         if (tag == .string and !options.coerce_strings) return error.BadValue;
                         for (options.null_strings) |check|
-                            if (std.mem.eql(u8, str.items, check)) return null;
+                            if (std.mem.eql(u8, str, check)) return null;
 
                         return try self.convertTo(opt.child, allocator, options);
                     },
@@ -275,17 +273,15 @@ pub const Value = union(enum) {
     }
 
     inline fn _fromScalarOrString(alloc: std.mem.Allocator, comptime classification: TagType, input: []const u8) !Value {
-        var res = @unionInit(Value, @tagName(classification), try String.initCapacity(alloc, input.len));
-        @field(res, @tagName(classification)).appendSliceAssumeCapacity(input);
-        return res;
+        return @unionInit(Value, @tagName(classification), try alloc.dupe(u8, input));
     }
 
-    pub inline fn newScalar(alloc: std.mem.Allocator) Value {
-        return .{ .scalar = String.init(alloc) };
+    pub inline fn emptyScalar() Value {
+        return .{ .scalar = "" };
     }
 
-    pub inline fn newString(alloc: std.mem.Allocator) Value {
-        return .{ .string = String.init(alloc) };
+    pub inline fn emptyString() Value {
+        return .{ .string = "" };
     }
 
     pub inline fn newList(alloc: std.mem.Allocator) Value {
@@ -307,7 +303,7 @@ pub const Value = union(enum) {
     pub fn recursiveEqualsExact(self: Value, other: Value) bool {
         if (@as(TagType, self) != other) return false;
         switch (self) {
-            inline .scalar, .string => |str, tag| return std.mem.eql(u8, str.items, @field(other, @tagName(tag)).items),
+            inline .scalar, .string => |str, tag| return std.mem.eql(u8, str, @field(other, @tagName(tag))),
             inline .list, .flow_list => |lst, tag| {
                 const olst = @field(other, @tagName(tag));
 
@@ -341,8 +337,8 @@ pub const Value = union(enum) {
     fn printRecursive(self: Value, indent: usize) void {
         switch (self) {
             .scalar, .string => |str| {
-                if (std.mem.indexOfScalar(u8, str.items, '\n')) |_| {
-                    var lines = std.mem.splitScalar(u8, str.items, '\n');
+                if (std.mem.indexOfScalar(u8, str, '\n')) |_| {
+                    var lines = std.mem.splitScalar(u8, str, '\n');
                     std.debug.print("\n", .{});
                     while (lines.next()) |line| {
                         std.debug.print(
@@ -356,7 +352,7 @@ pub const Value = union(enum) {
                         );
                     }
                 } else {
-                    std.debug.print("{s}", .{str.items});
+                    std.debug.print("{s}", .{str});
                 }
             },
             .list, .flow_list => |list| {
