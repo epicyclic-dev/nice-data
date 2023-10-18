@@ -70,7 +70,7 @@ pub const State = struct {
                     Value.emptyScalar(),
                     options.duplicate_key_behavior,
                 ),
-                .scalar, .flow_list, .flow_map => {},
+                .scalar, .inline_list, .inline_map => {},
             },
             .done => {},
         }
@@ -110,12 +110,12 @@ pub const State = struct {
                                 try state.value_stack.append(&state.document.root);
                                 state.mode = .value;
                             },
-                            .flow_list => |str| {
-                                state.document.root = try state.parseFlow(str, .flow_list, dkb);
+                            .inline_list => |str| {
+                                state.document.root = try state.parseFlow(str, .inline_list, dkb);
                                 state.mode = .done;
                             },
-                            .flow_map => |str| {
-                                state.document.root = try state.parseFlow(str, .flow_map, dkb);
+                            .inline_map => |str| {
+                                state.document.root = try state.parseFlow(str, .inline_map, dkb);
                                 state.mode = .done;
                             },
                         },
@@ -129,8 +129,8 @@ pub const State = struct {
                                 .empty => state.expect_shift = .indent,
                                 .scalar => |str| try rootlist.append(try Value.fromScalar(arena_alloc, str)),
                                 .line_string, .concat_string => |str| try rootlist.append(try Value.fromString(arena_alloc, str)),
-                                .flow_list => |str| try rootlist.append(try state.parseFlow(str, .flow_list, dkb)),
-                                .flow_map => |str| try rootlist.append(try state.parseFlow(str, .flow_map, dkb)),
+                                .inline_list => |str| try rootlist.append(try state.parseFlow(str, .inline_list, dkb)),
+                                .inline_map => |str| try rootlist.append(try state.parseFlow(str, .inline_map, dkb)),
                             }
                         },
                         .map_item => |pair| {
@@ -147,21 +147,25 @@ pub const State = struct {
                                 },
                                 .scalar => |str| try rootmap.put(dupekey, try Value.fromScalar(arena_alloc, str)),
                                 .line_string, .concat_string => |str| try rootmap.put(dupekey, try Value.fromString(arena_alloc, str)),
-                                .flow_list => |str| try rootmap.put(dupekey, try state.parseFlow(str, .flow_list, dkb)),
-                                .flow_map => |str| try rootmap.put(dupekey, try state.parseFlow(str, .flow_map, dkb)),
+                                .inline_list => |str| try rootmap.put(dupekey, try state.parseFlow(str, .inline_list, dkb)),
+                                .inline_map => |str| try rootmap.put(dupekey, try state.parseFlow(str, .inline_map, dkb)),
                             }
                         },
                     }
                 },
                 .value => switch (state.value_stack.getLast().*) {
-                    // these three states are never reachable here. flow_list and
-                    // flow_map are parsed with a separate state machine. These
+                    // these three states are never reachable here. inline_list and
+                    // inline_map are parsed with a separate state machine. These
                     // value types can only be present by themselves as the first
                     // line of the document, in which case the document consists
                     // only of that single line: this parser jumps immediately into
                     // the .done state, bypassing the .value state in which this
                     // switch is embedded.
-                    .scalar, .flow_list, .flow_map => return error.Fail,
+                    .scalar, .inline_list, .inline_map => {
+                        state.diagnostics.length = 1;
+                        state.diagnostics.message = "the document contains invalid data following a single-line value";
+                        return error.Fail;
+                    },
                     .string => |*string| {
                         if (line.shift == .indent) {
                             state.diagnostics.length = 1;
@@ -246,8 +250,8 @@ pub const State = struct {
                                 switch (in_line) {
                                     .empty => unreachable,
                                     .scalar => |str| try list.append(try Value.fromScalar(arena_alloc, str)),
-                                    .flow_list => |str| try list.append(try state.parseFlow(str, .flow_list, dkb)),
-                                    .flow_map => |str| try list.append(try state.parseFlow(str, .flow_map, dkb)),
+                                    .inline_list => |str| try list.append(try state.parseFlow(str, .inline_list, dkb)),
+                                    .inline_map => |str| try list.append(try state.parseFlow(str, .inline_map, dkb)),
                                     .line_string, .concat_string => |str| {
                                         const new_string = try appendListGetValue(list, Value.emptyString());
                                         try state.string_builder.appendSlice(arena_alloc, str);
@@ -263,8 +267,8 @@ pub const State = struct {
                                         .empty => state.expect_shift = .indent,
                                         .scalar => |str| try list.append(try Value.fromScalar(arena_alloc, str)),
                                         .line_string, .concat_string => |str| try list.append(try Value.fromString(arena_alloc, str)),
-                                        .flow_list => |str| try list.append(try state.parseFlow(str, .flow_list, dkb)),
-                                        .flow_map => |str| try list.append(try state.parseFlow(str, .flow_map, dkb)),
+                                        .inline_list => |str| try list.append(try state.parseFlow(str, .inline_list, dkb)),
+                                        .inline_map => |str| try list.append(try state.parseFlow(str, .inline_map, dkb)),
                                     }
                                 } else if (line.shift == .indent) {
                                     if (state.expect_shift != .indent) return error.UnexpectedIndent;
@@ -345,9 +349,9 @@ pub const State = struct {
                                 switch (in_line) {
                                     .empty => unreachable,
                                     .scalar => |str| try state.putMap(map, state.dangling_key.?, try Value.fromScalar(arena_alloc, str), dkb),
-                                    .flow_list => |str| try state.putMap(map, state.dangling_key.?, try state.parseFlow(str, .flow_list, dkb), dkb),
-                                    .flow_map => |str| {
-                                        try state.putMap(map, state.dangling_key.?, try state.parseFlow(str, .flow_map, dkb), dkb);
+                                    .inline_list => |str| try state.putMap(map, state.dangling_key.?, try state.parseFlow(str, .inline_list, dkb), dkb),
+                                    .inline_map => |str| {
+                                        try state.putMap(map, state.dangling_key.?, try state.parseFlow(str, .inline_map, dkb), dkb);
                                     },
                                     .line_string, .concat_string => |str| {
                                         // string pushes the stack
@@ -392,8 +396,8 @@ pub const State = struct {
                                         },
                                         .scalar => |str| try state.putMap(map, dupekey, try Value.fromScalar(arena_alloc, str), dkb),
                                         .line_string, .concat_string => |str| try state.putMap(map, dupekey, try Value.fromString(arena_alloc, str), dkb),
-                                        .flow_list => |str| try state.putMap(map, dupekey, try state.parseFlow(str, .flow_list, dkb), dkb),
-                                        .flow_map => |str| try state.putMap(map, dupekey, try state.parseFlow(str, .flow_map, dkb), dkb),
+                                        .inline_list => |str| try state.putMap(map, dupekey, try state.parseFlow(str, .inline_list, dkb), dkb),
+                                        .inline_map => |str| try state.putMap(map, dupekey, try state.parseFlow(str, .inline_map, dkb), dkb),
                                     }
                                 } else if (line.shift == .indent) {
                                     if (state.expect_shift != .indent or state.dangling_key == null) {
@@ -432,17 +436,17 @@ pub const State = struct {
         const arena_alloc = state.document.arena.allocator();
 
         var root: Value = switch (root_type) {
-            .flow_list => Value.newFlowList(arena_alloc),
-            .flow_map => Value.newFlowMap(arena_alloc),
+            .inline_list => Value.newFlowList(arena_alloc),
+            .inline_map => Value.newFlowMap(arena_alloc),
             else => {
                 state.diagnostics.length = 1;
-                state.diagnostics.message = "the flow item was closed too many times";
+                state.diagnostics.message = "the inline map or list was closed too many times";
                 return error.BadState;
             },
         };
         var pstate: FlowParseState = switch (root_type) {
-            .flow_list => .want_list_item,
-            .flow_map => .want_map_key,
+            .inline_list => .want_list_item,
+            .inline_map => .want_map_key,
             else => unreachable,
         };
 
@@ -460,14 +464,14 @@ pub const State = struct {
                     ',' => {
                         // empty value
                         const tip = try state.getStackTip();
-                        try tip.flow_list.append(Value.emptyScalar());
+                        try tip.inline_list.append(Value.emptyScalar());
                         item_start = idx + 1;
                     },
                     '{' => {
                         const tip = try state.getStackTip();
 
                         const new_map = try appendListGetValue(
-                            &tip.flow_list,
+                            &tip.inline_list,
                             Value.newFlowMap(arena_alloc),
                         );
 
@@ -479,7 +483,7 @@ pub const State = struct {
                         const tip = try state.getStackTip();
 
                         const new_list = try appendListGetValue(
-                            &tip.flow_list,
+                            &tip.inline_list,
                             Value.newFlowList(arena_alloc),
                         );
 
@@ -490,11 +494,11 @@ pub const State = struct {
                     ']' => {
                         const finished = state.value_stack.getLastOrNull() orelse {
                             state.diagnostics.length = 1;
-                            state.diagnostics.message = "the flow list was closed too many times";
+                            state.diagnostics.message = "the inline list was closed too many times";
                             return error.BadState;
                         };
-                        if (finished.flow_list.items.len > 0 or idx > item_start)
-                            try finished.flow_list.append(Value.emptyScalar());
+                        if (finished.inline_list.items.len > 0 or idx > item_start)
+                            try finished.inline_list.append(Value.emptyScalar());
                         pstate = try state.popFlowStack();
                     },
                     else => {
@@ -514,7 +518,7 @@ pub const State = struct {
                         };
 
                         const tip = try state.getStackTip();
-                        try tip.flow_list.append(
+                        try tip.inline_list.append(
                             try Value.fromScalar(arena_alloc, contents[item_start..end]),
                         );
                         item_start = idx + 1;
@@ -533,10 +537,10 @@ pub const State = struct {
 
                         const finished = state.value_stack.getLastOrNull() orelse {
                             state.diagnostics.length = 1;
-                            state.diagnostics.message = "the flow list was closed too many times";
+                            state.diagnostics.message = "the inline list was closed too many times";
                             return error.BadState;
                         };
-                        try finished.flow_list.append(
+                        try finished.inline_list.append(
                             try Value.fromScalar(arena_alloc, contents[item_start..end]),
                         );
                         pstate = try state.popFlowStack();
@@ -553,19 +557,19 @@ pub const State = struct {
                     ']' => pstate = try state.popFlowStack(),
                     else => return {
                         state.diagnostics.length = 1;
-                        state.diagnostics.message = "the document contains an invalid flow list separator";
+                        state.diagnostics.message = "the document contains an invalid inline list separator";
                         return error.BadToken;
                     },
                 },
                 .want_map_key => switch (char) {
                     ' ' => continue :charloop,
                     '\t' => return error.IllegalTabWhitespaceInLine,
-                    // forbid these characters so that flow dictionary keys cannot start
+                    // forbid these characters so that inline dictionary keys cannot start
                     // with characters that regular dictionary keys cannot start with
                     // (even though they're unambiguous in this specific context).
                     '{', '[', '#', '-', '>', '|', ',' => return {
                         state.diagnostics.length = 1;
-                        state.diagnostics.message = "this document contains a flow map key that starts with an invalid character";
+                        state.diagnostics.message = "this document contains a inline map key that starts with an invalid sequence";
                         return error.BadToken;
                     },
                     ':' => {
@@ -600,7 +604,7 @@ pub const State = struct {
                     ',' => {
                         const tip = try state.getStackTip();
                         try state.putMap(
-                            &tip.flow_map,
+                            &tip.inline_map,
                             dangling_key.?,
                             Value.emptyScalar(),
                             dkb,
@@ -613,7 +617,7 @@ pub const State = struct {
                         const tip = try state.getStackTip();
 
                         const new_list = try state.putMapGetValue(
-                            &tip.flow_map,
+                            &tip.inline_map,
                             dangling_key.?,
                             Value.newFlowList(arena_alloc),
                             dkb,
@@ -628,7 +632,7 @@ pub const State = struct {
                         const tip = try state.getStackTip();
 
                         const new_map = try state.putMapGetValue(
-                            &tip.flow_map,
+                            &tip.inline_map,
                             dangling_key.?,
                             Value.newFlowMap(arena_alloc),
                             dkb,
@@ -642,7 +646,7 @@ pub const State = struct {
                         // the value is an empty string and this map is closed
                         const tip = try state.getStackTip();
                         try state.putMap(
-                            &tip.flow_map,
+                            &tip.inline_map,
                             dangling_key.?,
                             Value.emptyScalar(),
                             dkb,
@@ -669,7 +673,7 @@ pub const State = struct {
 
                         const tip = try state.getStackTip();
                         try state.putMap(
-                            &tip.flow_map,
+                            &tip.inline_map,
                             dangling_key.?,
                             try Value.fromScalar(arena_alloc, contents[item_start..end]),
                             dkb,
@@ -689,7 +693,7 @@ pub const State = struct {
 
                         const tip = try state.getStackTip();
                         try state.putMap(
-                            &tip.flow_map,
+                            &tip.inline_map,
                             dangling_key.?,
                             try Value.fromScalar(arena_alloc, contents[item_start..end]),
                             dkb,
@@ -706,7 +710,7 @@ pub const State = struct {
                     '}' => pstate = try state.popFlowStack(),
                     else => return {
                         state.diagnostics.length = 1;
-                        state.diagnostics.message = "this document contains an invalid character instead of a flow map separator";
+                        state.diagnostics.message = "this document contains an invalid character instead of a inline map separator";
                         return error.BadToken;
                     },
                 },
@@ -722,7 +726,7 @@ pub const State = struct {
         // we ran out of characters while still in the middle of an object
         if (pstate != .done) return {
             state.diagnostics.length = 1;
-            state.diagnostics.message = "this document contains an unterminated flow item";
+            state.diagnostics.message = "this document contains an unterminated inline map or list";
             return error.BadState;
         };
 
@@ -747,8 +751,8 @@ pub const State = struct {
         const parent = state.value_stack.getLastOrNull() orelse return .done;
 
         return switch (parent.*) {
-            .flow_list => .want_list_separator,
-            .flow_map => .want_map_separator,
+            .inline_list => .want_list_separator,
+            .inline_map => .want_map_separator,
             else => .done,
         };
     }

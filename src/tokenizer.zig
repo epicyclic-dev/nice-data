@@ -25,8 +25,8 @@ pub const InlineItem = union(enum) {
     line_string: []const u8,
     concat_string: []const u8,
 
-    flow_list: []const u8,
-    flow_map: []const u8,
+    inline_list: []const u8,
+    inline_map: []const u8,
 };
 
 pub const LineContents = union(enum) {
@@ -304,23 +304,23 @@ pub fn LineTokenizer(comptime Buffer: type) type {
                     if (buf.len - start < 2 or buf[buf.len - 1] != ']') {
                         self.buffer.diag().line_offset = 0;
                         self.buffer.diag().length = 1;
-                        self.buffer.diag().message = "this line contains a flow-style list but does not end with the closing character ']'";
+                        self.buffer.diag().message = "this line contains a inline list but does not end with the closing character ']'";
                         return error.BadToken;
                     }
 
-                    // keep the closing ] for the flow parser
-                    return .{ .flow_list = buf[start + 1 ..] };
+                    // keep the closing ] for the inline parser
+                    return .{ .inline_list = buf[start + 1 ..] };
                 },
                 '{' => {
                     if (buf.len - start < 2 or buf[buf.len - 1] != '}') {
                         self.buffer.diag().line_offset = 0;
                         self.buffer.diag().length = 1;
-                        self.buffer.diag().message = "this line contains a flow-style map but does not end with the closing character '}'";
+                        self.buffer.diag().message = "this line contains a inline map but does not end with the closing character '}'";
                         return error.BadToken;
                     }
 
-                    // keep the closing } fpr the flow parser
-                    return .{ .flow_map = buf[start + 1 ..] };
+                    // keep the closing } for the inline parser
+                    return .{ .inline_map = buf[start + 1 ..] };
                 },
                 else => {
                     if (buf[buf.len - 1] == ' ' or buf[buf.len - 1] == '\t') {

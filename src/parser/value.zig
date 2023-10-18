@@ -49,9 +49,9 @@ pub const Value = union(enum) {
     scalar: String,
     string: String,
     list: List,
-    flow_list: List,
+    inline_list: List,
     map: Map,
-    flow_map: Map,
+    inline_map: Map,
 
     pub fn convertTo(self: Value, comptime T: type, allocator: std.mem.Allocator, options: Options) !T {
         switch (@typeInfo(T)) {
@@ -104,7 +104,7 @@ pub const Value = union(enum) {
                     // TODO: This also doesn't handle sentinels properly.
                     switch (self) {
                         .scalar, .string => |str| return if (ptr.child == u8) str else error.BadValue,
-                        .list, .flow_list => |lst| {
+                        .list, .inline_list => |lst| {
                             var result = try std.ArrayList(ptr.child).initCapacity(allocator, lst.items.len);
                             errdefer result.deinit();
                             for (lst.items) |item| {
@@ -138,7 +138,7 @@ pub const Value = union(enum) {
                             return result;
                         } else return error.BadValue;
                     },
-                    .list, .flow_list => |lst| {
+                    .list, .inline_list => |lst| {
                         var storage = try std.ArrayList(arr.child).initCapacity(allocator, arr.len);
                         defer storage.deinit();
                         for (lst.items) |item| {
@@ -158,7 +158,7 @@ pub const Value = union(enum) {
 
                 if (stt.is_tuple) {
                     switch (self) {
-                        .list, .flow_list => |list| {
+                        .list, .inline_list => |list| {
                             if (list.items.len != stt.fields.len) return error.BadValue;
                             var result: T = undefined;
                             inline for (stt.fields, 0..) |field, idx| {
@@ -171,7 +171,7 @@ pub const Value = union(enum) {
                 }
 
                 switch (self) {
-                    .map, .flow_map => |map| {
+                    .map, .inline_map => |map| {
                         var result: T = undefined;
 
                         if (options.ignore_extra_fields) {
@@ -232,7 +232,7 @@ pub const Value = union(enum) {
                 if (unn.tag_type == null) @compileError("Cannot deserialize into untagged union " ++ @typeName(T));
 
                 switch (self) {
-                    .map, .flow_map => |map| {
+                    .map, .inline_map => |map| {
                         // a union may not ever be deserialized from a map with more than one value
                         if (map.count() != 1) return error.BadValue;
                         const key = map.keys()[0];
@@ -289,7 +289,7 @@ pub const Value = union(enum) {
     }
 
     pub inline fn newFlowList(alloc: std.mem.Allocator) Value {
-        return .{ .flow_list = List.init(alloc) };
+        return .{ .inline_list = List.init(alloc) };
     }
 
     pub inline fn newMap(alloc: std.mem.Allocator) Value {
@@ -297,21 +297,21 @@ pub const Value = union(enum) {
     }
 
     pub inline fn newFlowMap(alloc: std.mem.Allocator) Value {
-        return .{ .flow_map = Map.init(alloc) };
+        return .{ .inline_map = Map.init(alloc) };
     }
 
     pub fn recursiveEqualsExact(self: Value, other: Value) bool {
         if (@as(TagType, self) != other) return false;
         switch (self) {
             inline .scalar, .string => |str, tag| return std.mem.eql(u8, str, @field(other, @tagName(tag))),
-            inline .list, .flow_list => |lst, tag| {
+            inline .list, .inline_list => |lst, tag| {
                 const olst = @field(other, @tagName(tag));
 
                 if (lst.items.len != olst.items.len) return false;
                 for (lst.items, olst.items) |this, that| if (!this.recursiveEqualsExact(that)) return false;
                 return true;
             },
-            inline .map, .flow_map => |map, tag| {
+            inline .map, .inline_map => |map, tag| {
                 const omap = @field(other, @tagName(tag));
 
                 if (map.count() != omap.count()) return false;
@@ -355,7 +355,7 @@ pub const Value = union(enum) {
                     std.debug.print("{s}", .{str});
                 }
             },
-            .list, .flow_list => |list| {
+            .list, .inline_list => |list| {
                 if (list.items.len == 0) {
                     std.debug.print("[]", .{});
                     return;
@@ -372,7 +372,7 @@ pub const Value = union(enum) {
                     .{ .empty = "", .indent = indent },
                 );
             },
-            .map, .flow_map => |map| {
+            .map, .inline_map => |map| {
                 if (map.count() == 0) {
                     std.debug.print("{{}}", .{});
                     return;
