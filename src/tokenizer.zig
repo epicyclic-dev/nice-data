@@ -23,6 +23,7 @@ pub const InlineItem = union(enum) {
     empty: void,
     scalar: []const u8,
     line_string: []const u8,
+    space_string: []const u8,
     concat_string: []const u8,
 
     inline_list: []const u8,
@@ -162,104 +163,113 @@ pub fn LineTokenizer(comptime Buffer: type) type {
                 // this should not be possible, as empty lines are caught earlier.
                 if (line.len == 0) return error.Impossible;
 
-                switch (line[0]) {
-                    '#' => {
-                        // force comments to be followed by a space. This makes them
-                        // behave the same way as strings, actually.
-                        if (line.len > 1 and line[1] != ' ') {
-                            self.buffer.diag().line_offset += 1;
-                            self.buffer.diag().length = 1;
-                            self.buffer.diag().message = "this line is missing a space after the start of comment character '#'";
-                            return error.BadToken;
-                        }
-
-                        // simply lie about indentation when the line is a comment.
-                        quantized = self.last_indent;
-                        return .{
-                            .shift = .none,
-                            .contents = .{ .comment = line[1..] },
-                            .raw = line,
-                        };
-                    },
-                    '|', '>', '[', '{' => {
-                        return .{
-                            .shift = shift,
-                            .contents = .{ .in_line = try self.detectInlineItem(line) },
-                            .raw = line,
-                        };
-                    },
-                    '-' => {
-                        if (line.len > 1 and line[1] != ' ') {
-                            self.buffer.diag().line_offset += 1;
-                            self.buffer.diag().length = 1;
-                            self.buffer.diag().message = "this line is missing a space after the list entry character '-'";
-                            return error.BadToken;
-                        }
-
-                        // blindly add 2 here because an empty item cannot fail in
-                        // the value, only if a bogus dedent has occurred
-                        self.buffer.diag().line_offset += 2;
-
-                        return if (line.len == 1) .{
-                            .shift = shift,
-                            .contents = .{ .list_item = .empty },
-                            .raw = line,
-                        } else .{
-                            .shift = shift,
-                            .contents = .{ .list_item = try self.detectInlineItem(line[2..]) },
-                            .raw = line,
-                        };
-                    },
-                    else => {
-                        for (line, 0..) |char, idx| {
-                            if (char == ':') {
-                                if (idx > 0 and (line[idx - 1] == ' ' or line[idx - 1] == '\t')) {
-                                    self.buffer.diag().line_offset += idx - 1;
-                                    self.buffer.diag().length = 1;
-                                    self.buffer.diag().message = "this line contains space before the map key-value separator character ':'";
-                                    return error.TrailingWhitespace;
-                                }
-
-                                if (idx + 1 == line.len) {
-                                    self.buffer.diag().line_offset += idx + 1;
-                                    return .{
-                                        .shift = shift,
-                                        .contents = .{ .map_item = .{ .key = line[0..idx], .val = .empty } },
-                                        .raw = line,
-                                    };
-                                }
-
-                                if (line[idx + 1] != ' ') {
-                                    self.buffer.diag().line_offset += idx + 1;
-                                    self.buffer.diag().length = 1;
-                                    self.buffer.diag().message = "this line is missing a space after the map key-value separator character ':'";
-                                    return error.BadToken;
-                                }
-
-                                return .{
-                                    .shift = shift,
-                                    .contents = .{ .map_item = .{
-                                        .key = line[0..idx],
-                                        .val = try self.detectInlineItem(line[idx + 2 ..]),
-                                    } },
-                                    .raw = line,
-                                };
+                sigil: {
+                    switch (line[0]) {
+                        '#' => {
+                            // Force comments to be followed by a space. We could
+                            // allow #: to be interpreted as a map key, but I'm going
+                            // to specifically forbid it instead.
+                            if (line.len > 1 and line[1] != ' ') {
+                                self.buffer.diag().line_offset += 1;
+                                self.buffer.diag().length = 1;
+                                self.buffer.diag().message = "this line is missing a space after the start of comment character '#'";
+                                return error.BadToken;
                             }
-                        }
 
-                        return .{
-                            .shift = shift,
-                            .contents = .{ .in_line = .{ .scalar = line } },
-                            .raw = line,
-                        };
-                    },
+                            // simply lie about indentation when the line is a comment.
+                            quantized = self.last_indent;
+                            return .{
+                                .shift = .none,
+                                .contents = .{ .comment = line[1..] },
+                                .raw = line,
+                            };
+                        },
+                        '|', '>', '+' => {
+                            if (line.len > 1 and line[1] != ' ') {
+                                // we want to try parsing this as a map key
+                                break :sigil;
+                            }
+
+                            return .{
+                                .shift = shift,
+                                .contents = .{ .in_line = try self.detectInlineItem(line) },
+                                .raw = line,
+                            };
+                        },
+                        '[', '{' => {
+                            // these don't require being followed by a space, so they
+                            // cannot be interpreted as starting a map key in any way.
+                            return .{
+                                .shift = shift,
+                                .contents = .{ .in_line = try self.detectInlineItem(line) },
+                                .raw = line,
+                            };
+                        },
+                        '-' => {
+                            if (line.len > 1 and line[1] != ' ') {
+                                // we want to try parsing this as a map key
+                                break :sigil;
+                            }
+
+                            // blindly add 2 here because an empty item cannot fail in
+                            // the value, only if a bogus dedent has occurred
+                            self.buffer.diag().line_offset += 2;
+
+                            return if (line.len == 1) .{
+                                .shift = shift,
+                                .contents = .{ .list_item = .empty },
+                                .raw = line,
+                            } else .{
+                                .shift = shift,
+                                .contents = .{ .list_item = try self.detectInlineItem(line[2..]) },
+                                .raw = line,
+                            };
+                        },
+                        else => break :sigil,
+                    }
                 }
 
-                // somehow everything else has failed
-                self.buffer.diag().line_offset = 0;
-                self.buffer.diag().length = raw_line.len;
-                self.buffer.diag().message = "this document contains an unknown error. Please report this.";
-                return error.Impossible;
+                for (line, 0..) |char, idx| {
+                    if (char == ':') {
+                        if (idx > 0 and (line[idx - 1] == ' ' or line[idx - 1] == '\t')) {
+                            self.buffer.diag().line_offset += idx - 1;
+                            self.buffer.diag().length = 1;
+                            self.buffer.diag().message = "this line contains space before the map key-value separator character ':'";
+                            return error.TrailingWhitespace;
+                        }
+
+                        if (idx + 1 == line.len) {
+                            self.buffer.diag().line_offset += idx + 1;
+                            return .{
+                                .shift = shift,
+                                .contents = .{ .map_item = .{ .key = line[0..idx], .val = .empty } },
+                                .raw = line,
+                            };
+                        }
+
+                        if (line[idx + 1] != ' ') {
+                            self.buffer.diag().line_offset += idx + 1;
+                            self.buffer.diag().length = 1;
+                            self.buffer.diag().message = "this line is missing a space after the map key-value separator character ':'";
+                            return error.BadToken;
+                        }
+
+                        return .{
+                            .shift = shift,
+                            .contents = .{ .map_item = .{
+                                .key = line[0..idx],
+                                .val = try self.detectInlineItem(line[idx + 2 ..]),
+                            } },
+                            .raw = line,
+                        };
+                    }
+                }
+
+                return .{
+                    .shift = shift,
+                    .contents = .{ .in_line = .{ .scalar = line } },
+                    .raw = line,
+                };
             }
             return null;
         }
@@ -281,8 +291,12 @@ pub fn LineTokenizer(comptime Buffer: type) type {
             };
 
             switch (buf[start]) {
-                '>', '|' => |char| {
-                    if (buf.len - start > 1 and buf[start + 1] != ' ') return error.BadToken;
+                '>', '|', '+' => |char| {
+                    if (buf.len - start > 1 and buf[start + 1] != ' ') {
+                        self.buffer.diag().length = 1;
+                        self.buffer.diag().message = "this line is missing a space after the string start character";
+                        return error.BadToken;
+                    }
 
                     const slice: []const u8 = switch (buf[buf.len - 1]) {
                         ' ', '\t' => {
@@ -295,10 +309,12 @@ pub fn LineTokenizer(comptime Buffer: type) type {
                         else => buf[start + @min(2, buf.len - start) .. buf.len],
                     };
 
-                    return if (char == '>')
-                        .{ .line_string = slice }
-                    else
-                        .{ .concat_string = slice };
+                    return switch (char) {
+                        '>' => .{ .line_string = slice },
+                        '+' => .{ .space_string = slice },
+                        '|' => .{ .concat_string = slice },
+                        else => unreachable,
+                    };
                 },
                 '[' => {
                     if (buf.len - start < 2 or buf[buf.len - 1] != ']') {

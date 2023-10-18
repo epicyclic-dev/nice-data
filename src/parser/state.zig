@@ -59,7 +59,7 @@ pub const State = struct {
                 },
             },
             .value => switch (state.value_stack.getLast().*) {
-                // remove the final trailing newline or space
+                // we have an in-progress string, finish it.
                 .string => |*string| string.* = try state.string_builder.toOwnedSlice(arena_alloc),
                 // if we have a dangling -, attach an empty scalar to it
                 .list => |*list| if (state.expect_shift == .indent) try list.append(Value.emptyScalar()),
@@ -104,7 +104,7 @@ pub const State = struct {
                                 state.document.root = try Value.fromScalar(arena_alloc, str);
                                 state.mode = .done;
                             },
-                            .line_string, .concat_string => |str| {
+                            .line_string, .space_string, .concat_string => |str| {
                                 state.document.root = Value.emptyString();
                                 try state.string_builder.appendSlice(arena_alloc, str);
                                 try state.value_stack.append(&state.document.root);
@@ -128,7 +128,7 @@ pub const State = struct {
                             switch (value) {
                                 .empty => state.expect_shift = .indent,
                                 .scalar => |str| try rootlist.append(try Value.fromScalar(arena_alloc, str)),
-                                .line_string, .concat_string => |str| try rootlist.append(try Value.fromString(arena_alloc, str)),
+                                .line_string, .space_string, .concat_string => |str| try rootlist.append(try Value.fromString(arena_alloc, str)),
                                 .inline_list => |str| try rootlist.append(try state.parseFlow(str, .inline_list, dkb)),
                                 .inline_map => |str| try rootlist.append(try state.parseFlow(str, .inline_map, dkb)),
                             }
@@ -146,7 +146,7 @@ pub const State = struct {
                                     state.dangling_key = dupekey;
                                 },
                                 .scalar => |str| try rootmap.put(dupekey, try Value.fromScalar(arena_alloc, str)),
-                                .line_string, .concat_string => |str| try rootmap.put(dupekey, try Value.fromString(arena_alloc, str)),
+                                .line_string, .space_string, .concat_string => |str| try rootmap.put(dupekey, try Value.fromString(arena_alloc, str)),
                                 .inline_list => |str| try rootmap.put(dupekey, try state.parseFlow(str, .inline_list, dkb)),
                                 .inline_map => |str| try rootmap.put(dupekey, try state.parseFlow(str, .inline_map, dkb)),
                             }
@@ -188,9 +188,11 @@ pub const State = struct {
                             .comment => unreachable,
                             .in_line => |in_line| switch (in_line) {
                                 .empty => unreachable,
-                                inline .line_string, .concat_string => |str, tag| {
+                                inline .line_string, .space_string, .concat_string => |str, tag| {
                                     if (tag == .line_string)
                                         try state.string_builder.append(arena_alloc, '\n');
+                                    if (tag == .space_string)
+                                        try state.string_builder.append(arena_alloc, ' ');
                                     try state.string_builder.appendSlice(arena_alloc, str);
                                 },
                                 else => {
@@ -249,10 +251,14 @@ pub const State = struct {
                                 state.expect_shift = .dedent;
                                 switch (in_line) {
                                     .empty => unreachable,
-                                    .scalar => |str| try list.append(try Value.fromScalar(arena_alloc, str)),
+                                    .scalar => {
+                                        state.diagnostics.length = 1;
+                                        state.diagnostics.message = "the document may not contain a scalar value on its own line";
+                                        return error.UnexpectedValue;
+                                    },
                                     .inline_list => |str| try list.append(try state.parseFlow(str, .inline_list, dkb)),
                                     .inline_map => |str| try list.append(try state.parseFlow(str, .inline_map, dkb)),
-                                    .line_string, .concat_string => |str| {
+                                    .line_string, .space_string, .concat_string => |str| {
                                         const new_string = try appendListGetValue(list, Value.emptyString());
                                         try state.string_builder.appendSlice(arena_alloc, str);
                                         try state.value_stack.append(new_string);
@@ -266,7 +272,7 @@ pub const State = struct {
                                     switch (value) {
                                         .empty => state.expect_shift = .indent,
                                         .scalar => |str| try list.append(try Value.fromScalar(arena_alloc, str)),
-                                        .line_string, .concat_string => |str| try list.append(try Value.fromString(arena_alloc, str)),
+                                        .line_string, .space_string, .concat_string => |str| try list.append(try Value.fromString(arena_alloc, str)),
                                         .inline_list => |str| try list.append(try state.parseFlow(str, .inline_list, dkb)),
                                         .inline_map => |str| try list.append(try state.parseFlow(str, .inline_map, dkb)),
                                     }
@@ -291,7 +297,7 @@ pub const State = struct {
 
                                 if (state.expect_shift != .indent or line.shift != .indent) {
                                     state.diagnostics.length = 1;
-                                    state.diagnostics.message = "the document contains an invalid map key in a list";
+                                    state.diagnostics.message = "the document contains a map item where a list item is expected";
                                     return error.UnexpectedValue;
                                 }
 
@@ -348,12 +354,16 @@ pub const State = struct {
 
                                 switch (in_line) {
                                     .empty => unreachable,
-                                    .scalar => |str| try state.putMap(map, state.dangling_key.?, try Value.fromScalar(arena_alloc, str), dkb),
+                                    .scalar => {
+                                        state.diagnostics.length = 1;
+                                        state.diagnostics.message = "the document may not contain a scalar value on its own line";
+                                        return error.UnexpectedValue;
+                                    },
                                     .inline_list => |str| try state.putMap(map, state.dangling_key.?, try state.parseFlow(str, .inline_list, dkb), dkb),
                                     .inline_map => |str| {
                                         try state.putMap(map, state.dangling_key.?, try state.parseFlow(str, .inline_map, dkb), dkb);
                                     },
-                                    .line_string, .concat_string => |str| {
+                                    .line_string, .space_string, .concat_string => |str| {
                                         // string pushes the stack
                                         const new_string = try state.putMapGetValue(map, state.dangling_key.?, Value.emptyString(), dkb);
                                         try state.string_builder.appendSlice(arena_alloc, str);
@@ -375,7 +385,7 @@ pub const State = struct {
 
                                 if (state.expect_shift != .indent or line.shift != .indent or state.dangling_key == null) {
                                     state.diagnostics.length = 1;
-                                    state.diagnostics.message = "the document contains an invalid list item in a map";
+                                    state.diagnostics.message = "the document contains a list item where a map item is expected";
                                     return error.UnexpectedValue;
                                 }
 
@@ -395,7 +405,7 @@ pub const State = struct {
                                             state.dangling_key = dupekey;
                                         },
                                         .scalar => |str| try state.putMap(map, dupekey, try Value.fromScalar(arena_alloc, str), dkb),
-                                        .line_string, .concat_string => |str| try state.putMap(map, dupekey, try Value.fromString(arena_alloc, str), dkb),
+                                        .line_string, .space_string, .concat_string => |str| try state.putMap(map, dupekey, try Value.fromString(arena_alloc, str), dkb),
                                         .inline_list => |str| try state.putMap(map, dupekey, try state.parseFlow(str, .inline_list, dkb), dkb),
                                         .inline_map => |str| try state.putMap(map, dupekey, try state.parseFlow(str, .inline_map, dkb), dkb),
                                     }
@@ -567,7 +577,12 @@ pub const State = struct {
                     // forbid these characters so that inline dictionary keys cannot start
                     // with characters that regular dictionary keys cannot start with
                     // (even though they're unambiguous in this specific context).
-                    '{', '[', '#', '-', '>', '|', ',' => return {
+                    '{', '[', '#', ',' => return {
+                        state.diagnostics.length = 1;
+                        state.diagnostics.message = "this document contains a inline map key that starts with an invalid character";
+                        return error.BadToken;
+                    },
+                    '-', '>', '+', '|' => if ((idx + 1) < contents.len and contents[idx + 1] == ' ') {
                         state.diagnostics.length = 1;
                         state.diagnostics.message = "this document contains a inline map key that starts with an invalid sequence";
                         return error.BadToken;
