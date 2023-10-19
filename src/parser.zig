@@ -64,15 +64,30 @@ pub const Options = struct {
     coerce_strings: bool = false,
 
     // Only used by the parseTo family of functions.
-    // Two lists of strings. Truthy strings will be parsed to boolean true. Falsy
-    // strings will be parsed to boolean  false. All other strings will raise an
-    // error.
-    boolean_strings: struct { truthy: []const []const u8, falsy: []const []const u8 } = .{
+    // Two lists of strings. Scalars in a document that match any of the truthy values
+    // will be parsed to boolean true. Scalars in the document that match any of the
+    // falsy values will be parsed to boolean false. All other scalar values will raise
+    // an error if the destination is a boolean type. By default, these comparisons are
+    // case-sensitive. See the `case_insensitive_scalar_coersion` option to change
+    // this.
+    boolean_scalars: struct { truthy: []const []const u8, falsy: []const []const u8 } = .{
         .truthy = &.{ "true", "True", "yes", "on" },
         .falsy = &.{ "false", "False", "no", "off" },
     },
 
-    null_strings: []const []const u8 = &.{ "null", "nil", "None" },
+    // Only used by the parseTo family of functions.
+    // A list of strings. Scalars in the doucment that match any of the values listed
+    // will be parsed to optional `null`. Any other scalar value will be parsed as the
+    // optional child type if the destination type is an optional. By default, these
+    // comparisons are case-sensitive. See the `case_insensitive_scalar_coersion`
+    // option to change this.
+    null_scalars: []const []const u8 = &.{ "null", "nil", "None" },
+
+    // Only used by the parseTo family of functions.
+    // Perform ASCII-case-insensitive comparisons for scalars (i.e. `TRUE` in a document
+    // will match `true` in the boolean scalars. Unicode case folding is not currently
+    // supported.
+    case_insensitive_scalar_coersion: bool = false,
 
     // Only used by the parseTo family of functions.
     // If true, document scalars that appear to be numbers will attempt to convert into

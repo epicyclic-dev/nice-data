@@ -66,10 +66,17 @@ pub const Value = union(enum) {
                 switch (self) {
                     inline .scalar, .string => |str, tag| {
                         if (tag == .string and !options.coerce_strings) return error.BadValue;
-                        for (options.boolean_strings.truthy) |check|
-                            if (std.mem.eql(u8, str, check)) return true;
-                        for (options.boolean_strings.falsy) |check|
-                            if (std.mem.eql(u8, str, check)) return false;
+                        if (options.case_insensitive_scalar_coersion) {
+                            for (options.boolean_strings.truthy) |check|
+                                if (std.ascii.eqlIgnoreCase(str, check)) return true;
+                            for (options.boolean_strings.falsy) |check|
+                                if (std.ascii.eqlIgnoreCase(str, check)) return false;
+                        } else {
+                            for (options.boolean_strings.truthy) |check|
+                                if (std.mem.eql(u8, str, check)) return true;
+                            for (options.boolean_strings.falsy) |check|
+                                if (std.mem.eql(u8, str, check)) return false;
+                        }
 
                         return error.BadValue;
                     },
@@ -252,8 +259,13 @@ pub const Value = union(enum) {
                 switch (self) {
                     inline .scalar, .string => |str, tag| {
                         if (tag == .string and !options.coerce_strings) return error.BadValue;
-                        for (options.null_strings) |check|
-                            if (std.mem.eql(u8, str, check)) return null;
+                        if (options.case_insensitive_scalar_coersion) {
+                            for (options.null_strings) |check|
+                                if (std.ascii.eqlIgnoreCase(str, check)) return null;
+                        } else {
+                            for (options.null_strings) |check|
+                                if (std.mem.eql(u8, str, check)) return null;
+                        }
 
                         return try self.convertTo(opt.child, allocator, options);
                     },
