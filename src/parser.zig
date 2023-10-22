@@ -94,6 +94,15 @@ pub const Options = struct {
     null_scalars: []const []const u8 = &.{ "null", "nil", "None" },
 
     // Only used by the parseTo family of functions.
+    // Choose whether to strip the leading `.` off of expected enum values. By default,
+    // `.enum_field` will be parsed into the enum field `enum_field`, which makes them
+    // look like source code enum literals. Any enum value missing the leading `.` will
+    // result in a conversion error. If set to false, no preprocessing will be done
+    // and enum values will be converted from the literal scalar/string. These two styles
+    // cannot be mixed in a single document.
+    expect_enum_dot: bool = true,
+
+    // Only used by the parseTo family of functions.
     // Perform ASCII-case-insensitive comparisons for scalars (i.e. `TRUE` in a document
     // will match `true` in the boolean scalars. Unicode case folding is not currently
     // supported.

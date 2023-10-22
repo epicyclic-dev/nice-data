@@ -244,7 +244,14 @@ pub const Value = union(enum) {
                 switch (self) {
                     inline .scalar, .string => |str, tag| {
                         if (tag == .string and !options.coerce_strings) return error.BadValue;
-                        if (std.meta.stringToEnum(T, str)) |value| return value;
+                        const name = if (options.expect_enum_dot) blk: {
+                            if (str.len > 0 and str[0] == '.')
+                                break :blk str[1..]
+                            else
+                                return error.BadValue;
+                        } else str;
+
+                        if (std.meta.stringToEnum(T, name)) |value| return value;
                         if (options.allow_numeric_enums) {
                             const parsed = std.fmt.parseInt(@typeInfo(T).Enum.tag_type, str, 10) catch
                                 return error.BadValue;

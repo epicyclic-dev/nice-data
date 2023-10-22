@@ -32,7 +32,7 @@ const source =
     \\	# and a trailing newline for good measure
     \\	>
     \\tuple: [ no, 127 ]
-    \\enume: third
+    \\enume: .third
     \\taggart:
     \\	first: string a thing
     \\list:
