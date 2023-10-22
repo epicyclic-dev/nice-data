@@ -9,7 +9,7 @@ const Example = struct {
     useful: bool,
     number: i32,
     string: []const u8,
-    longstring: []const u8,
+    longstring: [:0]const u8,
     tuple: struct { bool, i8 },
     enume: enum { first, second, third },
     taggart: union(enum) { first: []const u8, second: i32 },

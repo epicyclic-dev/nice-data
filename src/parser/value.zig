@@ -118,16 +118,30 @@ pub const Value = union(enum) {
                     //       type to use for this? the problem is that it becomes
                     //       invasive into downstream code. Ultimately this should
                     //       probably be solved in the zig stdlib or similar.
-                    // TODO: This also doesn't handle sentinels properly.
                     switch (self) {
-                        .scalar, .string => |str| return if (ptr.child == u8) str else error.BadValue,
+                        .scalar, .string => |str| {
+                            if (ptr.child == u8) {
+                                if (ptr.sentinel) |sent| {
+                                    var copy = try allocator.allocSentinel(u8, str.len, @as(*const u8, @ptrCast(sent)).*);
+                                    @memcpy(copy, str);
+                                    return copy;
+                                }
+                                return str;
+                            } else {
+                                return error.BadValue;
+                            }
+                        },
                         .list, .inline_list => |lst| {
                             var result = try std.ArrayList(ptr.child).initCapacity(allocator, lst.items.len);
                             errdefer result.deinit();
                             for (lst.items) |item| {
                                 result.appendAssumeCapacity(try item.convertTo(ptr.child, allocator, options));
                             }
-                            return result.toOwnedSlice();
+                            if (ptr.sentinel) |sent| {
+                                return try result.toOwnedSliceSentinel(@as(*align(1) const ptr.child, @ptrCast(sent)).*);
+                            } else {
+                                return try result.toOwnedSlice();
+                            }
                         },
                         else => return error.BadValue,
                     }
@@ -146,7 +160,6 @@ pub const Value = union(enum) {
                 //       type to use for this? the problem is that it becomes
                 //       invasive into downstream code. Ultimately this should
                 //       probably be solved in the zig stdlib or similar.
-                // TODO: This also doesn't handle sentinels properly.
                 switch (self) {
                     .scalar, .string => |str| {
                         if (arr.child == u8 and str.len == arr.len) {
