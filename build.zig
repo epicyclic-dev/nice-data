@@ -26,6 +26,7 @@ const Example = struct {
 const examples = [_]Example{
     .{ .name = "parse", .file = "examples/parse.zig" },
     .{ .name = "stream", .file = "examples/stream.zig" },
+    .{ .name = "reify", .file = "examples/reify.zig" },
 };
 
 pub fn add_examples(b: *std.build, options: ExampleOptions) void {

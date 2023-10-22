@@ -67,14 +67,14 @@ pub const Value = union(enum) {
                     inline .scalar, .string => |str, tag| {
                         if (tag == .string and !options.coerce_strings) return error.BadValue;
                         if (options.case_insensitive_scalar_coersion) {
-                            for (options.boolean_strings.truthy) |check|
+                            for (options.boolean_scalars.truthy) |check|
                                 if (std.ascii.eqlIgnoreCase(str, check)) return true;
-                            for (options.boolean_strings.falsy) |check|
+                            for (options.boolean_scalars.falsy) |check|
                                 if (std.ascii.eqlIgnoreCase(str, check)) return false;
                         } else {
-                            for (options.boolean_strings.truthy) |check|
+                            for (options.boolean_scalars.truthy) |check|
                                 if (std.mem.eql(u8, str, check)) return true;
-                            for (options.boolean_strings.falsy) |check|
+                            for (options.boolean_scalars.falsy) |check|
                                 if (std.mem.eql(u8, str, check)) return false;
                         }
 
@@ -260,10 +260,10 @@ pub const Value = union(enum) {
                     inline .scalar, .string => |str, tag| {
                         if (tag == .string and !options.coerce_strings) return error.BadValue;
                         if (options.case_insensitive_scalar_coersion) {
-                            for (options.null_strings) |check|
+                            for (options.null_scalars) |check|
                                 if (std.ascii.eqlIgnoreCase(str, check)) return null;
                         } else {
-                            for (options.null_strings) |check|
+                            for (options.null_scalars) |check|
                                 if (std.mem.eql(u8, str, check)) return null;
                         }
 
