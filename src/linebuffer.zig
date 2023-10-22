@@ -1,3 +1,13 @@
+// Copyright 2023 torque@epicyclic.dev
+//
+// Licensed under the MIT/Expat license. You may not use this file except in
+// compliance with the license. You may obtain a copy of the license at
+//
+//    https://spdx.org/licenses/MIT.html
+//
+// This software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+// CONDITIONS OF ANY KIND, either express or implied.
+
 const std = @import("std");
 
 const Diagnostics = @import("./parser.zig").Diagnostics;

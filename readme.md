@@ -84,7 +84,7 @@ The string leader sequence consists of an ASCII character followed by a single A
 
 Note that the leader of the first fragment of a string has no effect on the string, and may be any of the three options, but using `| ` is recommended.
 
-The standard fragment trailer is just the normal literal linefeed character `"\n"`, as shown in the examples above. However, because Nice does not permit trailing whitespace syntactically, a string fragment may use the pipe character `|` as a trailer. If the last character in a string fragment is `|`, it will be stripped from the string while the rest of the line is preserved. Note that due to this, if a string fragment needs to end with a pipe character, it must be doubled, as the last one will be stripped from the fragment.
+The standard fragment trailer is just the normal literal linefeed character `"\n"`, as shown in the examples above. However, because Nice does not permit trailing whitespace syntactically, a string fragment may use the pipe character `|` as a trailer. If the last character in a string fragment is `|`, it will be stripped from the fragment while preserving the rest of the line. If a string fragment needs to end with a pipe character, the pipe must be doubled, as the last `|` will be stripped from the fragment.
 
 ```nice
 | lots of   |
@@ -119,7 +119,7 @@ parses to the following JSON structure:
 ["a list", "containing", "", "several values"]
 ```
 
-There are a couple of new concepts here. The first new concept is demonstrated in the second value, which is an inline string. This is a standard fragment string that appears on the same line after another introducer (either a list item introducer, as in this example, or a map key introducer, which will be demonstrated in the section describing maps). The only difference between an inline string and a normal string as discussed above is that the inline string may is composed of only a single fragment (meaning it cannot be spread across multiple lines). The string leader used has no effect on an inline string, since the leader is not applied.
+There are a couple of new concepts here. The first new concept is demonstrated in the second value, which is an inline string. This is a standard string fragment that appears on the same line after another introducer (either a list item introducer, as in this example, or a map key introducer, which will be demonstrated in the section describing maps). The only difference between an inline string and a normal string as discussed above is that the inline string may is composed of only a single fragment (meaning it cannot be spread across multiple lines). The string leader used has no effect on an inline string, since the leader is not applied.
 
 The other new concept is structural indentation. The fourth list item contains an indented string following a list item introducer that does not contain an inline value. Because the string sequence is indented, it belongs to the list item introduced immediately before it. Note that an indented sequence following an introducer that contains an inline value is a syntactic error. That is, the following document **cannot** be parsed:
 
@@ -195,9 +195,9 @@ Hopefully you agree that readability suffers when a more complex hierarchy is ja
 
 ### Maps
 
-A map is a data structure consisting of a sequence of pairs, with each pair being composed of a key and value. A map may represent a general-purpose pair-based data structure such as a hashtable, or it may represent a strictly defined data type with a fixed number of named fields, like a C `struct`. The keys of the map are exclusively scalars, but the corresponding values may be any Nice type, including scalars, strings, lists, or other maps.
+A map is a data structure consisting of a sequence of pairs, with each pair being composed of a key and value. A map may represent a general-purpose pair-based data structure such as a hashtable, or it may represent a strictly defined data type with a fixed number of named fields, like a C `struct`. The keys of the map are exclusively scalars, but the corresponding values may be any Nice type or scalar, including scalars, strings, lists, or other maps.
 
-A map item is introduced by the key scalar. A key scalar is a scalar value that is terminated with an ASCII colon followed by a space `: `. The `:` is removed from the end of the key scalar when parsing. Key scalars may not begin with a sequence that is used for introducing a different type, which means that map keys cannot start with `#` (comments), `- ` (list item introducer), `+ `, `| `, `> `, (string fragment leaders) `[` (inline lists), or `{` (inline maps). Note that `-`, `+`, `|`, and `>` without a following space may be used to begin map keys unambiguously. However `#`, `[`, and `{` are always forbidden. Additionally, key scalars may not contain a colon `:`. Comments may intersperse map pairs. As with the other introducers, if the key scalar is the only item on a line, it must not have a trailing space.
+A map item is introduced by the key scalar. A key scalar is a scalar value that is terminated with an ASCII colon followed by a space `: `. The `:` is removed from the end of the key scalar when parsing. Key scalars may not begin with a sequence that is used for introducing a different type, which means that map keys cannot start with `#` (comments), `- ` (list item introducer), `+ `, `| `, `> ` (string fragment leaders), `[` (inline lists), or `{` (inline maps). `-`, `+`, `|`, and `>` without a following space may be used to begin map keys unambiguously, but `#`, `[`, and `{` are always forbidden. Additionally, key scalars may not contain a colon `:`. Comments may intersperse map pairs. As with the other introducers, if the key scalar is the only item on a line, it must not have a trailing space.
 
 Enough talk, have an example:
 
@@ -208,9 +208,9 @@ a string:
     + from a map
 inline string: | hello from a map
 a list:
-    - 1
-    - 2
-    - 3
+    - true
+    - false
+    - null
 inline list: [ 1, 2, 3 ]
 a map:
     nested:
@@ -225,8 +225,8 @@ This maps to the following JSON structure:
     "a scalar": "value",
     "a string": "hello from a map",
     "inline string": "hello from a map",
-    "a list": [1, 2, 3],
-    "inline list": [1, 2, 3],
+    "a list": ["true", "false", "null"],
+    "inline list": ["1", "2", "3"],
     "a map": { "nested": { "several": "levels" } },
     "an empty value": ""
 }
@@ -246,18 +246,35 @@ values:        value: 2
 }
 ```
 
-- inline maps
+### Inline Maps
+
+The final syntactic construct is the inline map which is, as its name hopefully suggests, the map equivalent of an inline list. An inline map is introduced by an opening curly brace `{` and closed by an opposing brace `}`. An inline map consists of a sequence of key-value pairs with the keys being separated from the values by the `:` character. An inline map may contain scalars, inline lists, and other inline maps as values, and all of its keys must be scalars. As with inline lists, whitespace surrounding values is ignored, and whitespace preceding keys is also ignored (there must be no whitespace between the key and its following `:`).
+
+```nice
+an example: { this: is, an inline: map }
+nests:
+    - { a list: [ of, { inline: maps } ] }
+```
+
+```JSON
+{
+    "an example": {"this": "is", "an inline": "map"},
+    "nests": [
+        { "a list": [ "of", { "inline": "maps" } ] }
+    ]
+}
+```
 
 
 ## Restrictions
 
-Nice documents must be encoded in valid UTF-8. They must use `LF`-only newlines (`CR` characters are forbidden). Tabs and spaces cannot be mixed for indentation. Indentation *must* adhere to a consistent quantum. Nonprinting ASCII characters are forbidden (specifically, any character less than `0x20` (space) except for `0x09` (horizontal tab) and `0x0A` (newline)). Trailing whitespace, including lines consisting only of whitespace, is forbidden, although empty lines are permitted. Some keys and values cannot be represented (for example, map keys cannot start with the character `#`, though map values can).
+Nice documents must be encoded in valid UTF-8. They must use `LF`-only newlines (`CR` characters are forbidden). Tabs and spaces cannot be mixed for indentation. Indentation *must* adhere to a consistent quantum throughout the whole document, including on comment lines. Nonprinting ASCII characters are forbidden (specifically, any character less than `0x20` (space) except for `0x09` (horizontal tab) and `0x0A` (newline)). Trailing whitespace, including lines consisting only of whitespace, is forbidden, although empty lines are permitted. Some keys and values cannot be represented (for example, map keys cannot start with the character `#`, though map values can).
 
 ## Philosophy
 
 ### Let the Application Interpret Data Types (Bring Your Own Schema)
 
-An arbitrarily structured data format with strict types adds complexity to the parser and cannot possibly cover all necessary types needed for every possible application. For example, numbers in JSON are represented by a sequence of ASCII characters, but they are defined by the format to be restricted to specifying double precision floating point numbers. Of course, it is possible to generate a numeric ASCII sequence that does not fit into a double precision floating point number. If an application needs to represent a 64-bit integer in JSON without producing technically invalid JSON, the value must be serialized as a string, which places the burden of decoding it on the application, since the format cannot represent it as a direct numeric value. The same is true of an RFC 3339 datetime. It's not possible for a format to account for every possible data type that an application may need, so don't bother. Users are encouraged to parse Nice documents directly into well-defined, typed structures. If you're interested, the NestedText documentation contains a [highly comprehensive explanation of why having explicit data types in your serialization format is a futile pursuit][only-strings].
+An arbitrarily structured data format with strict types adds complexity to the parser and cannot possibly cover all necessary types needed for every possible application. For example, numbers in JSON are represented by a sequence of ASCII characters, but they are defined by the format to be restricted to specifying double precision floating point numbers. Of course, it is possible to generate a numeric ASCII sequence that does not fit into a double precision floating point number. If an application needs to represent a 64-bit integer in JSON without producing technically invalid JSON, the value must be serialized as a string, which places the burden of decoding it on the application, since the format cannot represent it as a direct numeric value. The same is true of an RFC 3339 datetime. It's not possible for a format to account for every possible data type that an application may need, so don't bother. Users are encouraged to parse Nice documents directly into well-defined, typed structures. If you're interested, the NestedText documentation contains [several examples of why having strict data types in your serialization format is not as useful as you think][only-strings].
 
 Nice explicitly differentiates between bare scalars and strings so that `null` may be disambiguated and interpreted differently from `"null"`.
 
@@ -271,15 +288,36 @@ Nice has no exhaustive specification or formal grammar. The parser is handwritte
 
 # The Implementation
 
+The Reference™ Nice parser/deserializer is this Zig library. It contains a handwritten nonrecursive parser to a generic data structure (`nice.Value`, a tagged union that can represent a scalar, a string, a list of these generic values, or a map of scalars to these generic values). The included example scripts demonstrate how to use the API. See `examples/parse.zig` for one-shot parsing from a slice. `examples/stream.zig` demonstrates how to parse streaming data that does not require loading a whole document into memory at once. This is slower will generally have a lower peak memory usage (which is mainly driven by the size of the document).
+
+`nice.Value` has a method to recursively be converted into a strongly
+typed user-defined structure. Zig's compile-time reflection is used to generate code to perform appropriate type conversion. There a variety of options which can be used to control specific details of the conversion, which are governed by `nice.parser.Options`. `examples/reify.zig` demonstrates basic use of this functionality.
+
+A reference to a `nice.Diagnostics` object with a lifecycle at least as long as the parser must always be provided when parsing. If the source document could not be parsed, this diagnostic object will contain a human-readable explanation of the invalid syntax in the source document that caused the parser to error.
+
+## Memory Strategy
+
+The parser wraps a user-provided allocator in an arena, which is used for all internal allocations. All parsed values are copied into the arena rather than storing references to the source document. The parse result contains a reference to the arena, which can be used to free all of the data allocated during parsing.
+
 # Disclaimer
 
-Yeah, it's entirely possible you hate this and think it's not in fact a nice format. That's fine, but, unfortunately, you forgot to make a time machine and make me name it something else. And yeah, this is probably impossible to search for.
+It's entirely possible you hate this and think it's not, in fact, a nice data format. That's fine, but, unfortunately, you forgot to make a time machine and go back in time to make me name it something else. And yeah, this is probably impossible to search for.
 
 # FAQ
 
 Q: This is so similar to NestedText, why on earth didn't you just implement that?
 
 A: in my opinion, it's extremely stupid that NestedText does not support indentation using tabs. Also, trailing whitespace is 100% satanic (in the bad way). And if an implementation is going to diverge there, it might as well roll in some other ideas, call it a new format, and just ruin the world with one more slightly-incompatible thing.
+
+Q: Why is this documentation kind of bad?
+
+A: I'll be honest, I ran out of steam while writing it. For a format that probably nobody besides me will ever use because there's so much open source code in the world that anything without heavy marketing tends to die in obscurity, it's a lot of work to write down the things I already know. But I have put an FAQ section here, while also indicating nobody has ever asked questions about this. Hmm.
+
+# License
+
+What are you going to do, steal my open-source code? Oh, noooooooooo. Here, let me help you.
+
+Library is licensed MIT, examples are Public Domain/CC0. See file headers and the file `license` in the source tree for details.
 
 [NestedText]: https://nestedtext.org
 [only-strings]: https://nestedtext.org/en/latest/alternatives.html#only-strings
