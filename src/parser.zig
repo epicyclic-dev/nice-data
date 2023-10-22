@@ -155,6 +155,7 @@ pub fn parseBufferTo(
     options: Options,
 ) !Parsed(T) {
     var doc = try parseBuffer(allocator, buffer, diagnostics, options);
+    errdefer doc.deinit();
     return try doc.convertTo(T, options);
 }
 
