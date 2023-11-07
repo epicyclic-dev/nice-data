@@ -287,9 +287,28 @@ pub const Value = union(enum) {
                         }
                         return error.BadValue;
                     },
-                    // TODO: if the field is a 0 width type like void, we could parse it
-                    //       directly from a scalar/string value (i.e. a name with no
-                    //       corresponding value)
+                    inline .scalar, .string => |str, tag| {
+                        if (tag == .string and !options.coerce_strings) return error.BadValue;
+                        const name = if (options.expect_enum_dot) blk: {
+                            if (str.len > 0 and str[0] == '.')
+                                break :blk str[1..]
+                            else
+                                return error.BadValue;
+                        } else str;
+
+                        inline for (unn.fields) |field| {
+                            if (@sizeOf(field.type) != 0) continue;
+                            // this logic may be a little off: comtime_int,
+                            // comptime_float, and type will all have size 0 because
+                            // they can't be used at runtime. On the other hand, trying
+                            // to use them here should result in a compile error? Also,
+                            // it's a 0 sized type so initializing it as undefined
+                            // shouldn't be a problem. As far as I know.
+                            if (std.mem.eql(u8, name, field.name))
+                                return @unionInit(T, field.name, undefined);
+                        }
+                        return error.BadValue;
+                    },
                     else => return error.BadValue,
                 }
             },
