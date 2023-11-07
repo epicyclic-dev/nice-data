@@ -802,7 +802,10 @@ pub const State = struct {
                     return error.DuplicateKey;
                 },
                 .use_first => {},
-                .use_last => gop.value_ptr.* = value,
+                .use_last => {
+                    _ = map.orderedRemove(key);
+                    map.putAssumeCapacityNoClobber(key, value);
+                },
             }
         else
             gop.value_ptr.* = value;
