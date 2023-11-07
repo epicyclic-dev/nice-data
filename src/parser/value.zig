@@ -270,11 +270,19 @@ pub const Value = union(enum) {
 
                 switch (self) {
                     .map, .inline_map => |map| {
-                        // a union may not ever be deserialized from a map with more than one value
+                        // a union may not ever be deserialized from a map with more
+                        // (or less) than one value
                         if (map.count() != 1) return error.BadValue;
                         const key = map.keys()[0];
+                        const name = if (options.expect_enum_dot) blk: {
+                            if (key.len > 0 and key[0] == '.')
+                                break :blk key[1..]
+                            else
+                                return error.BadValue;
+                        } else key;
+
                         inline for (unn.fields) |field| {
-                            if (std.mem.eql(u8, key, field.name))
+                            if (std.mem.eql(u8, name, field.name))
                                 return @unionInit(T, field.name, try map.get(key).?.convertTo(field.type, allocator, options));
                         }
                         return error.BadValue;
