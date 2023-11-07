@@ -47,7 +47,7 @@ A scalar value is a sequence of valid UTF-8 codepoints. Scalars cannot contain l
 
 A string value is very similar to a scalar value, except that it is started by a leader character sequence and ended with trailer character sequence. Strings may be spread across multiple lines (here, we call each line a string fragment), and each fragment must start with a leader and end with the trailer. Strings fragments respect leading whitespace (after the leader sequence), unlike scalars. The trailer may be used to include trailing whitespace in a fragment. Comments may be interspersed between the fragments that compose a string (demonstrated below).
 
-The string leader sequence consists of an ASCII character followed by a single ASCII space. The space must be omitted if the fragment contains no other characters (because otherwise it would be trailing whitespace, which is forbidden). The leader sequence defines how the lines of the string are concatenated together, as follows:
+The string leader sequence consists of an ASCII character followed by a single ASCII space. The space must be omitted if the fragment contains no other characters (because otherwise it would be trailing whitespace, which is forbidden). The leader sequence defines how the fragments of the string are concatenated together, as follows:
 
 - `| ` specifies that this fragment of the string should be directly concatenated onto the previous fragment.
 
@@ -119,7 +119,7 @@ parses to the following JSON structure:
 ["a list", "containing", "", "several values"]
 ```
 
-There are a couple of new concepts here. The first new concept is demonstrated in the second value, which is an inline string. This is a standard string fragment that appears on the same line after another introducer (either a list item introducer, as in this example, or a map key introducer, which will be demonstrated in the section describing maps). The only difference between an inline string and a normal string as discussed above is that the inline string may is composed of only a single fragment (meaning it cannot be spread across multiple lines). The string leader used has no effect on an inline string, since the leader is not applied.
+There are a couple of new concepts here. The first new concept is demonstrated in the second value, which is an inline string. This is a standard string fragment that appears on the same line after another introducer (either a list item introducer, as in this example, or a map key introducer, which will be demonstrated in the section describing maps). The only difference between an inline string and a normal string as discussed above is that the inline string is composed of only a single fragment (meaning it cannot be spread across multiple lines). The string leader used has no effect on an inline string, since the leader is not applied.
 
 The other new concept is structural indentation. The fourth list item contains an indented string following a list item introducer that does not contain an inline value. Because the string sequence is indented, it belongs to the list item introduced immediately before it. Note that an indented sequence following an introducer that contains an inline value is a syntactic error. That is, the following document **cannot** be parsed:
 
@@ -167,7 +167,7 @@ The Nice document is similar in layout to its indented JSON counterpart but cont
 
 Inline lists allow a list to be specified in a more concise form on a line following another item introducer (either a list item introducer or a map item introducer). They consist of a comma-separated sequence of scalars within a pair of square brackets (`[` and `]`). Inline lists may also contain other inline lists and inline maps (discussed later), but they cannot contain strings. Whitespace before and after values in an inline list is ignored, though whitespace within a value is preserved. Inline list values may not contain commas. For reasons related to intellectual bankruptcy, `[]` and `[ ]` are distinct values, just as they are in NestedText. `[]` represents an empty list, while `[ ]` represents a list containing a single empty string. As is hopefully suggested by the name, an inline list *must* be specified on a single line.
 
-Inline lists are provided for when a document may benefit to having horizontal layout rather than vertical. It can also be used tactically to improve readability in other ways, but should not, in general, be preferred over standard lists. Here's the previous example, with a bit less indentation thanks to use of inline lists:
+Inline lists are provided for when some parts of a document may benefit from having horizontal layout rather than vertical layout. It can also be used tactically to improve readability in other ways, but should not, in general, be preferred over standard lists. Here's the previous example, with a bit less indentation thanks to use of inline lists:
 
 ```nice
 - start the parent
@@ -232,7 +232,9 @@ This maps to the following JSON structure:
 }
 ```
 
-Serialized maps are inherently ordered, but the data structures they represent do not necessarily preserve order. Nice preserves the order of the map keys as they were encountered in the document. ASCII spaces following the key scalar will be ignored, allowing adjacent values to be justified. The key scalar itself may not contain trailing or leading whitespace. A line only ever contains a single key scalar, unlike YAML. Maps must be nested using structural indentation.
+Serialized maps are inherently ordered, but the data structures they represent do not necessarily preserve order. Nice guarantees that the order of the map keys, as they were encountered in the document, is preserved. Serialized maps can also represent multiple entries that have the same key. This is not generally useful (if you need to have multiple values for a given key, its corresponding value should be a list) and cannot typically be represented by a map data structure. The Nice parser can be configured to produce a parse error when a duplicate key is encountered (the default behavior) or it can preserve either only first encountered duplicate value or only the last encountered duplicate value (in this case, the map order preserves the index of the last encountered duplicate, which may be less efficient if many duplicates exist, since it requires performing an ordered remove on the previously encountered instance).
+
+ASCII spaces following the key scalar will be ignored, allowing adjacent values to be justified. The key scalar itself may not contain trailing or leading whitespace. A line only ever contains a single key scalar, unlike YAML. Maps must be nested using structural indentation.
 
 ```nice
 fully aligned: value: 1
@@ -248,7 +250,7 @@ values:        value: 2
 
 ### Inline Maps
 
-The final syntactic construct is the inline map which is, as its name hopefully suggests, the map equivalent of an inline list. An inline map is introduced by an opening curly brace `{` and closed by an opposing brace `}`. An inline map consists of a sequence of key-value pairs with the keys being separated from the values by the `:` character. An inline map may contain scalars, inline lists, and other inline maps as values, and all of its keys must be scalars. As with inline lists, whitespace surrounding values is ignored, and whitespace preceding keys is also ignored (there must be no whitespace between the key and its following `:`).
+The final syntactic construct is the inline map, which is, as its name hopefully suggests, the map equivalent of an inline list. An inline map is introduced by an opening curly brace `{` and closed by an opposing brace `}`. An inline map consists of a sequence of key-value pairs with the keys being separated from the values by the `:` character. An inline map may contain scalars, inline lists, and other inline maps as values, and all of its keys must be scalars. As with inline lists, whitespace surrounding values is ignored, and whitespace preceding keys is also ignored (there must be no whitespace between the key and its following `:`).
 
 ```nice
 an example: { this: is, an inline: map }
@@ -268,7 +270,7 @@ nests:
 
 ## Restrictions
 
-Nice documents must be encoded in valid UTF-8. They must use `LF`-only newlines (`CR` characters are forbidden). Tabs and spaces cannot be mixed for indentation. Indentation *must* adhere to a consistent quantum throughout the whole document, including on comment lines. Nonprinting ASCII characters are forbidden (specifically, any character less than `0x20` (space) except for `0x09` (horizontal tab) and `0x0A` (newline)). Trailing whitespace, including lines consisting only of whitespace, is forbidden, although empty lines are permitted. Some keys and values cannot be represented (for example, map keys cannot start with the character `#`, though map values can).
+Nice documents must be encoded in valid UTF-8 with no BOM. They must use `LF`-only newlines (`CR` characters are forbidden). Tabs and spaces cannot be mixed for indentation. Indentation *must* adhere to a consistent quantum throughout the whole document, including on comment lines. Nonprinting ASCII characters are forbidden (specifically, any character less than `0x20` (space) except for `0x09` (horizontal tab) and `0x0A` (newline)). Trailing whitespace, including lines consisting only of whitespace, is forbidden, although empty lines are permitted. Some keys and values cannot be represented (for example, map keys cannot start with the character `#`, though map values can).
 
 ## Philosophy
 
@@ -288,7 +290,7 @@ Nice has no exhaustive specification or formal grammar. The parser is handwritte
 
 # The Implementation
 
-The Reference™ Nice parser/deserializer is this Zig library. It contains a handwritten nonrecursive parser to a generic data structure (`nice.Value`, a tagged union that can represent a scalar, a string, a list of these generic values, or a map of scalars to these generic values). The included example scripts demonstrate how to use the API. See `examples/parse.zig` for one-shot parsing from a slice. `examples/stream.zig` demonstrates how to parse streaming data that does not require loading a whole document into memory at once. This is slower will generally have a lower peak memory usage (which is mainly driven by the size of the document).
+The Reference™ Nice parser/deserializer is this Zig library. It contains a handwritten nonrecursive parser to a generic data structure (`nice.Value`, a tagged union that can represent a scalar, a string, a list of these generic values, or a map of scalars to these generic values). The included example scripts demonstrate how to use the API. See `examples/parse.zig` for one-shot parsing from a slice. `examples/stream.zig` demonstrates how to parse streaming data that does not require loading a whole document into memory at once. This is slower but will generally have a lower peak memory usage (though that is mainly driven by the size of the document).
 
 `nice.Value` has a method to recursively be converted into a strongly
 typed user-defined structure. Zig's compile-time reflection is used to generate code to perform appropriate type conversion. There a variety of options which can be used to control specific details of the conversion, which are governed by `nice.parser.Options`. `examples/reify.zig` demonstrates basic use of this functionality.
