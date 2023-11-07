@@ -5,14 +5,18 @@ const std = @import("std");
 
 const nice = @import("nice");
 
+const Enum = enum { first, second, third };
+const TagUnion = union(Enum) { first: []const u8, second: i32, third: void };
+
 const Example = struct {
     useful: bool,
     number: i32,
     string: []const u8,
     longstring: [:0]const u8,
     tuple: struct { bool, i8 },
-    enume: enum { first, second, third },
-    taggart: union(enum) { first: []const u8, second: i32 },
+    enume: Enum,
+    taggart: TagUnion,
+    voidtag: TagUnion,
     exist: ?bool,
     again: ?bool,
     array: [5]i16,
@@ -32,9 +36,9 @@ const source =
     \\	# and a trailing newline for good measure
     \\	>
     \\tuple: [ no, 127 ]
-    \\enume: .third
-    \\taggart:
-    \\	first: string a thing
+    \\enume: .second
+    \\taggart: {.first: string a thing}
+    \\voidtag: .third
     \\list:
     \\	- I am a list item
     \\exist: null
@@ -69,11 +73,18 @@ pub fn main() !void {
     std.debug.print("    string: {s}\n", .{loaded.value.string});
     std.debug.print("    longstring: {s}\n", .{loaded.value.longstring});
     std.debug.print("    tuple: {{ {}, {d} }}\n", .{ loaded.value.tuple[0], loaded.value.tuple[1] });
-    std.debug.print("    enume: {s}\n", .{@tagName(loaded.value.enume)});
+    std.debug.print("    enume: .{s}\n", .{@tagName(loaded.value.enume)});
     std.debug.print("    taggart: ", .{});
     switch (loaded.value.taggart) {
         .first => |val| std.debug.print(".first = {s}\n", .{val}),
         .second => |val| std.debug.print(".second = {d}\n", .{val}),
+        .third => std.debug.print(".third\n", .{}),
+    }
+    std.debug.print("    voidtag: ", .{});
+    switch (loaded.value.voidtag) {
+        .first => |val| std.debug.print(".first = {s}\n", .{val}),
+        .second => |val| std.debug.print(".second = {d}\n", .{val}),
+        .third => std.debug.print(".third\n", .{}),
     }
     std.debug.print("    exist: {?}\n", .{loaded.value.exist});
     std.debug.print("    again: {?}\n", .{loaded.value.again});
