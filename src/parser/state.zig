@@ -199,9 +199,9 @@ pub const State = struct {
                             .in_line => |in_line| switch (in_line) {
                                 .empty => unreachable,
                                 inline .line_string, .space_string, .concat_string => |str, tag| {
-                                    if (tag == .line_string)
+                                    if (comptime tag == .line_string)
                                         try state.string_builder.append(arena_alloc, '\n');
-                                    if (tag == .space_string)
+                                    if (comptime tag == .space_string)
                                         try state.string_builder.append(arena_alloc, ' ');
                                     try state.string_builder.appendSlice(arena_alloc, str);
                                 },

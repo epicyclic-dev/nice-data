@@ -223,10 +223,10 @@ pub const Value = union(enum) {
                                 }
                             }
                         } else {
-                            // we could iterate over each map key and do an exhaustive
-                            // comparison with each struct field name. This would save
-                            // memory and it would probably be a fair amount faster for
-                            // small structs.
+                            // TODO: consider not cloning the map here. This would
+                            //       result in the requirement that the raw value object
+                            //       not be used after it has been converted to a type,
+                            //       based on the parse options.
                             var clone = try map.clone();
                             defer clone.deinit();
                             inline for (stt.fields) |field| {
