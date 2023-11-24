@@ -21,6 +21,7 @@ const Example = struct {
     again: ?bool,
     array: [5]i16,
     nested: [3]struct { index: usize, title: []const u8 },
+    default: u64 = 0xDEADCAFE,
 };
 
 const source =
@@ -98,5 +99,6 @@ pub fn main() !void {
         std.debug.print("        {{ index: {d}, title: {s} }}\n", .{ item.index, item.title });
     }
     std.debug.print("    ]\n", .{});
+    std.debug.print("    default: 0x{X}\n", .{loaded.value.default});
     std.debug.print("}}\n", .{});
 }
