@@ -106,7 +106,7 @@ pub const Value = union(enum) {
                 switch (self) {
                     inline .scalar, .string => |str, tag| {
                         if (tag == .string and !options.coerce_strings) return error.BadValue;
-                        return try std.fmt.parseFloat(T, str, 0);
+                        return try std.fmt.parseFloat(T, str);
                     },
                     else => return error.BadValue,
                 }
