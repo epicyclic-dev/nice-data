@@ -131,15 +131,18 @@ pub const Value = union(enum) {
                             }
                         },
                         .list, .inline_list => |lst| {
-                            var result = try std.ArrayList(ptr.child).initCapacity(allocator, lst.items.len);
-                            errdefer result.deinit();
-                            for (lst.items) |item| {
-                                result.appendAssumeCapacity(try item.convertTo(ptr.child, allocator, options));
+                            const result = try allocator.alloc(ptr.child, lst.items.len + @intFromBool(ptr.sentinel != null));
+
+                            for (result[0..lst.items.len], lst.items) |*res, item| {
+                                res.* = try item.convertTo(ptr.child, allocator, options);
                             }
-                            if (ptr.sentinel) |sent| {
-                                return try result.toOwnedSliceSentinel(@as(*align(1) const ptr.child, @ptrCast(sent)).*);
+
+                            if (comptime ptr.sentinel) |sentinel| {
+                                const sval = @as(*align(1) const ptr.child, @ptrCast(sentinel)).*;
+                                result[lst.items.len] = sval;
+                                return result[0..lst.items.len :sval];
                             } else {
-                                return try result.toOwnedSlice();
+                                return result;
                             }
                         },
                         else => return error.BadValue,
@@ -151,7 +154,7 @@ pub const Value = union(enum) {
                     result.* = try self.convertTo(ptr.child, allocator, options);
                     return result;
                 },
-                else => @compileError("Cannot deserialize into many-pointer or c-pointer " ++ @typeName(T)), // do not support many or C item pointers.
+                else => @compileError("Cannot deserialize into many-pointer or c-pointer " ++ @typeName(T)),
             },
             .Array => |arr| {
                 // TODO: There is ambiguity here because a document expecting a list
@@ -168,14 +171,12 @@ pub const Value = union(enum) {
                         } else return error.BadValue;
                     },
                     .list, .inline_list => |lst| {
-                        var storage = try std.ArrayList(arr.child).initCapacity(allocator, arr.len);
-                        defer storage.deinit();
-                        for (lst.items) |item| {
-                            storage.appendAssumeCapacity(try item.convertTo(arr.child, allocator, options));
-                        }
-                        // this may result in a big stack allocation, which is not ideal
+                        if (lst.items.len != arr.len) return error.BadValue;
+
                         var result: T = undefined;
-                        @memcpy(&result, storage.items);
+                        for (&result, lst.items) |*res, item| {
+                            res.* = try item.convertTo(arr.child, allocator, options);
+                        }
                         return result;
                     },
                     else => return error.BadValue,
@@ -190,8 +191,8 @@ pub const Value = union(enum) {
                         .list, .inline_list => |list| {
                             if (list.items.len != stt.fields.len) return error.BadValue;
                             var result: T = undefined;
-                            inline for (stt.fields, 0..) |field, idx| {
-                                result[idx] = try list.items[idx].convertTo(field.type, allocator, options);
+                            inline for (stt.fields, &result, list.items) |field, *res, item| {
+                                res.* = try item.convertTo(field.type, allocator, options);
                             }
                             return result;
                         },
