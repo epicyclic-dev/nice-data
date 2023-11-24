@@ -9,6 +9,11 @@
 // CONDITIONS OF ANY KIND, either express or implied.
 
 const std = @import("std");
+const hasFn = if (@hasDecl(std.meta, "trait")) struct {
+    fn hasFn(comptime T: type, comptime name: []const u8) bool {
+        return std.meta.trait.hasFn(name)(T);
+    }
+}.hasFn else std.meta.hasFn;
 
 const Options = @import("../parser.zig").Options;
 
@@ -183,7 +188,7 @@ pub const Value = union(enum) {
                 }
             },
             .Struct => |stt| {
-                if (comptime std.meta.trait.hasFn("deserializeNice")(T))
+                if (comptime hasFn(T, "deserializeNice"))
                     return T.deserializeNice(self, allocator, options);
 
                 if (stt.is_tuple) {
@@ -244,7 +249,7 @@ pub const Value = union(enum) {
                 }
             },
             .Enum => {
-                if (comptime std.meta.trait.hasFn("deserializeNice")(T))
+                if (comptime hasFn(T, "deserializeNice"))
                     return T.deserializeNice(self, allocator, options);
 
                 switch (self) {
@@ -269,7 +274,7 @@ pub const Value = union(enum) {
                 }
             },
             .Union => |unn| {
-                if (comptime std.meta.trait.hasFn("deserializeNice")(T))
+                if (comptime hasFn(T, "deserializeNice"))
                     return T.deserializeNice(self, allocator, options);
 
                 if (unn.tag_type == null) @compileError("Cannot deserialize into untagged union " ++ @typeName(T));

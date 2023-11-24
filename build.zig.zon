@@ -2,4 +2,11 @@
     .name = "nice-data",
     .version = "0.1.0-pre",
     .dependencies = .{},
+    .paths = .{
+        "src",
+        "build.zig",
+        "build.zig.zon",
+        "license",
+        "readme.md",
+    },
 }
