@@ -61,11 +61,11 @@ pub const Options = struct {
     ignore_extra_fields: bool = true,
 
     // Only used by the parseTo family of functions.
-    // If true, if a struct field is an optional type and the corresponding mapping key
-    // does not exist, the object field will be set to `null`. By default, if the
-    // parsed document is missing a mapping key for a given field, an error will be
-    // raised instead.
-    treat_omitted_as_null: bool = false,
+    // If true, if a struct field has a default value associated with it and the
+    // corresponding mapping key does not exist, the object field will be set to the
+    // default value. By default, this behavior is enabled, allowing succinct
+    // representation of objects that have default fields.
+    allow_omitting_default_values: bool = true,
 
     // Only used by the parseTo family of functions.
     // If true, strings may be coerced into other scalar types, like booleans or

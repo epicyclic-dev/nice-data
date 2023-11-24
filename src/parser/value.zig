@@ -208,8 +208,11 @@ pub const Value = union(enum) {
                             inline for (stt.fields) |field| {
                                 if (map.get(field.name)) |value| {
                                     @field(result, field.name) = try value.convertTo(field.type, allocator, options);
-                                } else if (options.treat_omitted_as_null and @typeInfo(field.type) == .Optional) {
-                                    @field(result, field.name) = null;
+                                } else if (options.allow_omitting_default_values) {
+                                    if (comptime field.default_value) |def|
+                                        @field(result, field.name) = @as(*align(1) const field.type, @ptrCast(def)).*
+                                    else
+                                        return error.BadValue;
                                 } else {
                                     return error.BadValue;
                                 }
@@ -224,8 +227,11 @@ pub const Value = union(enum) {
                             inline for (stt.fields) |field| {
                                 if (clone.fetchSwapRemove(field.name)) |kv| {
                                     @field(result, field.name) = try kv.value.convertTo(field.type, allocator, options);
-                                } else if (options.treat_omitted_as_null and @typeInfo(field.type) == .Optional) {
-                                    @field(result, field.name) = null;
+                                } else if (options.allow_omitting_default_values) {
+                                    if (comptime field.default_value) |def|
+                                        @field(result, field.name) = @as(*align(1) const field.type, @ptrCast(def)).*
+                                    else
+                                        return error.BadValue;
                                 } else return error.BadValue;
                             }
                             // there were extra fields in the data
