@@ -70,7 +70,7 @@ pub const State = struct {
             },
             .value => switch (state.value_stack.getLast().*) {
                 // we have an in-progress string, finish it.
-                .string => |*string| string.* = try state.string_builder.toOwnedSlice(arena_alloc),
+                .string => |*string| string.* = try state.string_builder.toOwnedSliceSentinel(arena_alloc, 0),
                 // if we have a dangling -, attach an empty scalar to it
                 .list => |*list| if (state.expect_shift == .indent) try list.append(Value.emptyScalar()),
                 // if we have a dangling "key:", attach an empty scalar to it
@@ -185,7 +185,7 @@ pub const State = struct {
 
                         if (firstpass and line.shift == .dedent) {
                             // copy the string into the document proper
-                            string.* = try state.string_builder.toOwnedSlice(arena_alloc);
+                            string.* = try state.string_builder.toOwnedSliceSentinel(arena_alloc, 0);
 
                             var dedent_depth = line.shift.dedent;
                             while (dedent_depth > 0) : (dedent_depth -= 1)

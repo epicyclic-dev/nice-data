@@ -51,7 +51,7 @@ pub fn Parsed(comptime T: type) type {
 }
 
 pub const Value = union(enum) {
-    pub const String = []const u8;
+    pub const String = [:0]const u8;
     pub const Map = std.StringArrayHashMap(Value);
     pub const List = std.ArrayList(Value);
     pub const TagType = @typeInfo(Value).Union.tag_type.?;
@@ -120,12 +120,11 @@ pub const Value = union(enum) {
                     //       probably be solved in the zig stdlib or similar.
                     switch (self) {
                         .scalar, .string => |str| {
-                            if (ptr.child == u8) {
-                                if (ptr.sentinel) |sent| {
-                                    var copy = try allocator.allocSentinel(u8, str.len, @as(*const u8, @ptrCast(sent)).*);
-                                    @memcpy(copy, str);
-                                    return copy;
-                                }
+                            if (comptime ptr.child == u8) {
+                                if (comptime ptr.sentinel) |sentinel|
+                                    if (comptime @as(*align(1) const ptr.child, @ptrCast(sentinel)).* != 0)
+                                        return error.BadValue;
+
                                 return str;
                             } else {
                                 return error.BadValue;
@@ -348,7 +347,7 @@ pub const Value = union(enum) {
     }
 
     inline fn _fromScalarOrString(alloc: std.mem.Allocator, comptime classification: TagType, input: []const u8) !Value {
-        return @unionInit(Value, @tagName(classification), try alloc.dupe(u8, input));
+        return @unionInit(Value, @tagName(classification), try alloc.dupeZ(u8, input));
     }
 
     pub inline fn emptyScalar() Value {
