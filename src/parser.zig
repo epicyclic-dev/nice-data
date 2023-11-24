@@ -99,7 +99,9 @@ pub const Options = struct {
     // look like source code enum literals. Any enum value missing the leading `.` will
     // result in a conversion error. If set to false, no preprocessing will be done
     // and enum values will be converted from the literal scalar/string. These two styles
-    // cannot be mixed in a single document.
+    // cannot be mixed in a single document. Note that this setting also affects how
+    // tagged unions are parsed (specifically, the union's field name must also have the
+    // leading `.` if this option is enabled.)
     expect_enum_dot: bool = true,
 
     // Only used by the parseTo family of functions.
