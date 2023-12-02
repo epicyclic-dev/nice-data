@@ -82,14 +82,14 @@ pub const Value = union(enum) {
                     inline .scalar, .string => |str, tag| {
                         if (tag == .string and !options.coerce_strings) return error.BadValue;
                         if (options.case_insensitive_scalar_coersion) {
-                            for (options.boolean_scalars.truthy) |check|
+                            for (options.truthy_boolean_scalars) |check|
                                 if (std.ascii.eqlIgnoreCase(str, check)) return true;
-                            for (options.boolean_scalars.falsy) |check|
+                            for (options.falsy_boolean_scalars) |check|
                                 if (std.ascii.eqlIgnoreCase(str, check)) return false;
                         } else {
-                            for (options.boolean_scalars.truthy) |check|
+                            for (options.truthy_boolean_scalars) |check|
                                 if (std.mem.eql(u8, str, check)) return true;
-                            for (options.boolean_scalars.falsy) |check|
+                            for (options.falsy_boolean_scalars) |check|
                                 if (std.mem.eql(u8, str, check)) return false;
                         }
 

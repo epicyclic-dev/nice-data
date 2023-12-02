@@ -80,10 +80,8 @@ pub const Options = struct {
     // an error if the destination is a boolean type. By default, these comparisons are
     // case-sensitive. See the `case_insensitive_scalar_coersion` option to change
     // this.
-    boolean_scalars: struct { truthy: []const []const u8, falsy: []const []const u8 } = .{
-        .truthy = &.{ "true", "True", "yes", "on" },
-        .falsy = &.{ "false", "False", "no", "off" },
-    },
+    truthy_boolean_scalars: []const []const u8 = &.{ "true", "True", "yes", "on" },
+    falsy_boolean_scalars: []const []const u8 = &.{ "false", "False", "no", "off" },
 
     // Only used by the parseTo family of functions.
     // A list of strings. Scalars in the doucment that match any of the values listed
