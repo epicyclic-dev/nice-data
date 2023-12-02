@@ -59,7 +59,7 @@ pub const State = struct {
 
         switch (state.mode) {
             .initial => switch (options.default_object) {
-                .string => state.document.root = Value.emptyString(),
+                .scalar => state.document.root = Value.emptyScalar(),
                 .list => state.document.root = Value.newList(arena_alloc),
                 .map => state.document.root = Value.newMap(arena_alloc),
                 .fail => {

@@ -50,7 +50,7 @@ pub const Options = struct {
     // If an empty document is parsed, this defines what value type should be the
     // resulting document root object. The default behavior is to emit an error if the
     // document is empty.
-    default_object: enum { string, list, map, fail } = .fail,
+    default_object: enum { scalar, list, map, fail } = .fail,
 
     // Only used by the parseTo family of functions.
     // If false, and a mapping contains additional keys that do not map to the fields of
