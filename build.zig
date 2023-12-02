@@ -2,10 +2,25 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
 
     const nice = b.addModule("nice", .{
         .source_file = .{ .path = "src/nice.zig" },
     });
+
+    const tests = b.addTest(.{
+        .name = "nice-unit-tests",
+        .root_source_file = .{ .path = "tests/main.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+
+    tests.addModule("nice", nice);
+
+    const run_main_tests = b.addRunArtifact(tests);
+    const test_step = b.step("test", "Run tests");
+    test_step.dependOn(&b.addInstallArtifact(tests, .{}).step);
+    test_step.dependOn(&run_main_tests.step);
 
     add_examples(b, .{
         .target = target,
