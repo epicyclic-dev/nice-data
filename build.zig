@@ -5,7 +5,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const nice = b.addModule("nice", .{
-        .source_file = .{ .path = "src/nice.zig" },
+        .root_source_file = .{ .path = "src/nice.zig" },
     });
 
     const tests = b.addTest(.{
@@ -15,7 +15,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    tests.addModule("nice", nice);
+    tests.root_module.addImport("nice", nice);
 
     const run_main_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run tests");
@@ -29,7 +29,7 @@ pub fn build(b: *std.Build) void {
 }
 
 const ExampleOptions = struct {
-    target: std.zig.CrossTarget,
+    target: std.Build.ResolvedTarget,
     nice_mod: *std.Build.Module,
 };
 
@@ -44,7 +44,7 @@ const examples = [_]Example{
     .{ .name = "reify", .file = "examples/reify.zig" },
 };
 
-pub fn add_examples(b: *std.build, options: ExampleOptions) void {
+pub fn add_examples(b: *std.Build, options: ExampleOptions) void {
     const example_step = b.step("examples", "build examples");
 
     inline for (examples) |example| {
@@ -55,7 +55,7 @@ pub fn add_examples(b: *std.build, options: ExampleOptions) void {
             .optimize = .Debug,
         });
 
-        ex_exe.addModule("nice", options.nice_mod);
+        ex_exe.root_module.addImport("nice", options.nice_mod);
         const install = b.addInstallArtifact(ex_exe, .{});
         example_step.dependOn(&install.step);
     }
